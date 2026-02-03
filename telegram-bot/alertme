@@ -1,0 +1,120 @@
+#!/bin/bash
+# alertme - Send alert notifications to Telegram
+# Usage: alertme --title <title> --description <desc> --codeblock <code> --status <success|info|warning|error>
+
+SOCKET_PATH="/tmp/agent_telegram_bot.sock"
+
+# Default values
+TITLE=""
+DESCRIPTION=""
+CODEBLOCK=""
+STATUS="info"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --title|-t)
+            TITLE="$2"
+            shift 2
+            ;;
+        --description|--desc|-d)
+            DESCRIPTION="$2"
+            shift 2
+            ;;
+        --codeblock|--code|-c)
+            CODEBLOCK="$2"
+            shift 2
+            ;;
+        --status|-s)
+            STATUS="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "alertme - Send alert notifications to Telegram"
+            echo ""
+            echo "Usage: alertme [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --title, -t       Alert title (required)"
+            echo "  --description, -d Alert description"
+            echo "  --codeblock, -c   Code block to include"
+            echo "  --status, -s      Status: success, info, warning, error (default: info)"
+            echo "  --help, -h        Show this help"
+            echo ""
+            echo "Example:"
+            echo "  alertme --title 'Build Complete' --status success"
+            echo "  alertme -t 'Error' -d 'Something went wrong' -s error"
+            echo "  alertme -t 'Output' -c '\$(cat output.txt)' -s info"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$TITLE" ]; then
+    echo "Error: --title is required"
+    echo "Use --help for usage information"
+    exit 1
+fi
+
+# Validate status
+case "$STATUS" in
+    success|info|warning|error)
+        ;;
+    *)
+        echo "Error: Invalid status '$STATUS'. Must be: success, info, warning, error"
+        exit 1
+        ;;
+esac
+
+# Check if socket exists
+if [ ! -S "$SOCKET_PATH" ]; then
+    echo "Error: Telegram bot service is not running"
+    echo "Start it with: sudo systemctl start agent-telegram-bot"
+    exit 1
+fi
+
+# Escape special characters for JSON
+escape_json() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+TITLE_JSON=$(escape_json "$TITLE")
+DESC_JSON=$(escape_json "$DESCRIPTION")
+CODE_JSON=$(escape_json "$CODEBLOCK")
+
+# Build JSON request
+REQUEST=$(cat << EOF
+{
+    "action": "alert",
+    "title": $TITLE_JSON,
+    "description": $DESC_JSON,
+    "codeblock": $CODE_JSON,
+    "status": "$STATUS"
+}
+EOF
+)
+
+# Send request via socket
+RESPONSE=$(echo "$REQUEST" | nc -U -w 10 "$SOCKET_PATH" 2>/dev/null)
+
+if [ -z "$RESPONSE" ]; then
+    echo "Error: No response from bot service"
+    exit 1
+fi
+
+# Check response
+SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+if [ "$SUCCESS" = "true" ]; then
+    echo "Alert sent successfully"
+    exit 0
+else
+    ERROR=$(echo "$RESPONSE" | jq -r '.error // "Unknown error"')
+    echo "Error: $ERROR"
+    exit 1
+fi

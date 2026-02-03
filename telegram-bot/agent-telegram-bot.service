@@ -1,0 +1,29 @@
+[Unit]
+Description=Agent Telegram Bot Service
+Documentation=https://github.com/agent-setup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/etc/agent-setup
+ExecStart=/etc/agent-setup/venv/bin/python3 /etc/agent-setup/agent_telegram_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/agent-setup /tmp
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

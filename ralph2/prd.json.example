@@ -1,0 +1,49 @@
+{
+  "project": "MyApp",
+  "branchName": "ralph/feature-name",
+  "description": "Feature Description - Brief overview of what this PRD implements",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "First task title",
+      "description": "As a developer, I need to do X so that Y.",
+      "acceptanceCriteria": [
+        "First acceptance criterion",
+        "Second acceptance criterion",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Second task title",
+      "description": "As a user, I want to see X so that I can Y.",
+      "acceptanceCriteria": [
+        "UI shows the expected element",
+        "Element is visible without scrolling",
+        "Typecheck passes",
+        "Verify in browser"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Third task title",
+      "description": "As a user, I want to interact with X.",
+      "acceptanceCriteria": [
+        "Interaction works as expected",
+        "State updates correctly",
+        "Edge cases handled",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}
