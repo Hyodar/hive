@@ -1,0 +1,144 @@
+#!/bin/bash
+# promptme - Send prompt to Telegram and wait for reply
+# Usage: promptme --title <title> --description <desc> --codeblock <code> --status <status> --timeout <seconds>
+
+SOCKET_PATH="/tmp/agent_telegram_bot.sock"
+
+# Default values
+TITLE=""
+DESCRIPTION=""
+CODEBLOCK=""
+STATUS="info"
+TIMEOUT=300  # 5 minutes default
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --title|-t)
+            TITLE="$2"
+            shift 2
+            ;;
+        --description|--desc|-d)
+            DESCRIPTION="$2"
+            shift 2
+            ;;
+        --codeblock|--code|-c)
+            CODEBLOCK="$2"
+            shift 2
+            ;;
+        --status|-s)
+            STATUS="$2"
+            shift 2
+            ;;
+        --timeout|--time|-T)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "promptme - Send prompt to Telegram and wait for reply"
+            echo ""
+            echo "Usage: promptme [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --title, -t       Prompt title (required)"
+            echo "  --description, -d Prompt description"
+            echo "  --codeblock, -c   Code block to include"
+            echo "  --status, -s      Status: success, info, warning, error (default: info)"
+            echo "  --timeout, -T     Timeout in seconds (default: 300)"
+            echo "  --help, -h        Show this help"
+            echo ""
+            echo "Output:"
+            echo "  The user's reply is printed to stdout"
+            echo "  Exit code 0 on success, 1 on error, 2 on timeout"
+            echo ""
+            echo "Example:"
+            echo "  REPLY=\$(promptme --title 'Confirm' --description 'Proceed?' --timeout 60)"
+            echo "  promptme -t 'Choose option' -d '1, 2, or 3?' | xargs echo 'You chose:'"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$TITLE" ]; then
+    echo "Error: --title is required" >&2
+    echo "Use --help for usage information" >&2
+    exit 1
+fi
+
+# Validate status
+case "$STATUS" in
+    success|info|warning|error)
+        ;;
+    *)
+        echo "Error: Invalid status '$STATUS'. Must be: success, info, warning, error" >&2
+        exit 1
+        ;;
+esac
+
+# Validate timeout is a number
+if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]]; then
+    echo "Error: Timeout must be a positive integer" >&2
+    exit 1
+fi
+
+# Check if socket exists
+if [ ! -S "$SOCKET_PATH" ]; then
+    echo "Error: Telegram bot service is not running" >&2
+    echo "Start it with: sudo systemctl start agent-telegram-bot" >&2
+    exit 1
+fi
+
+# Escape special characters for JSON
+escape_json() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+TITLE_JSON=$(escape_json "$TITLE")
+DESC_JSON=$(escape_json "$DESCRIPTION")
+CODE_JSON=$(escape_json "$CODEBLOCK")
+
+# Build JSON request
+REQUEST=$(cat << EOF
+{
+    "action": "prompt",
+    "title": $TITLE_JSON,
+    "description": $DESC_JSON,
+    "codeblock": $CODE_JSON,
+    "status": "$STATUS",
+    "timeout": $TIMEOUT
+}
+EOF
+)
+
+# Send request via socket (with extended timeout for waiting)
+# nc timeout should be longer than the prompt timeout
+NC_TIMEOUT=$((TIMEOUT + 30))
+RESPONSE=$(echo "$REQUEST" | nc -U -w "$NC_TIMEOUT" "$SOCKET_PATH" 2>/dev/null)
+
+if [ -z "$RESPONSE" ]; then
+    echo "Error: No response from bot service" >&2
+    exit 1
+fi
+
+# Check response
+SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+IS_TIMEOUT=$(echo "$RESPONSE" | jq -r '.timeout // false')
+
+if [ "$SUCCESS" = "true" ]; then
+    # Output the response to stdout
+    echo "$RESPONSE" | jq -r '.response // ""'
+    exit 0
+elif [ "$IS_TIMEOUT" = "true" ]; then
+    echo "Error: Timeout waiting for response" >&2
+    exit 2
+else
+    ERROR=$(echo "$RESPONSE" | jq -r '.error // "Unknown error"')
+    echo "Error: $ERROR" >&2
+    exit 1
+fi
