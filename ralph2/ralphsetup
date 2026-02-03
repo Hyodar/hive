@@ -20,15 +20,22 @@ usage() {
     echo "Usage: ralphsetup <directory> [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --force, -f     Overwrite existing files"
-    echo "  --minimal       Only copy essential files (ralph2.sh, prd.json.example)"
-    echo "  --tool <name>   Set default tool in ralph2.sh (amp|claude|codex)"
-    echo "  --help, -h      Show this help"
+    echo "  --force, -f        Overwrite existing files"
+    echo "  --tool <name>      Set default tool in ralph2.sh (amp|claude|codex)"
+    echo "  --skip-skills      Don't install skills globally"
+    echo "  --skills-only      Only install skills globally, skip project setup"
+    echo "  --help, -h         Show this help"
     echo ""
     echo "Examples:"
     echo "  ralphsetup .                    # Initialize in current directory"
     echo "  ralphsetup /path/to/project     # Initialize in specific directory"
     echo "  ralphsetup . --tool codex       # Initialize with codex as default"
+    echo "  ralphsetup --skills-only        # Just install global skills"
+    echo ""
+    echo "Files installed:"
+    echo "  Project: scripts/ralph/         # ralph2.sh, prompts, prd.json"
+    echo "  Global:  ~/.config/amp/skills/  # Amp skills (prd, ralph)"
+    echo "  Global:  ~/.claude/skills/      # Claude Code skills (prd, ralph)"
     exit 0
 }
 
@@ -42,8 +49,9 @@ fi
 # Parse arguments
 TARGET_DIR=""
 FORCE=false
-MINIMAL=false
 DEFAULT_TOOL=""
+SKIP_SKILLS=false
+SKILLS_ONLY=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -54,13 +62,17 @@ while [[ $# -gt 0 ]]; do
             FORCE=true
             shift
             ;;
-        --minimal)
-            MINIMAL=true
-            shift
-            ;;
         --tool)
             DEFAULT_TOOL="$2"
             shift 2
+            ;;
+        --skip-skills)
+            SKIP_SKILLS=true
+            shift
+            ;;
+        --skills-only)
+            SKILLS_ONLY=true
+            shift
             ;;
         *)
             if [ -z "$TARGET_DIR" ]; then
@@ -74,33 +86,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate target directory
-if [ -z "$TARGET_DIR" ]; then
+# Validate arguments
+if [ "$SKILLS_ONLY" = false ] && [ -z "$TARGET_DIR" ]; then
     echo -e "${RED}Error: Target directory is required${NC}"
     echo "Usage: ralphsetup <directory>"
+    echo "       ralphsetup --skills-only"
     exit 1
 fi
-
-# Create directory if it doesn't exist
-if [ ! -d "$TARGET_DIR" ]; then
-    echo -e "${BLUE}Creating directory: $TARGET_DIR${NC}"
-    mkdir -p "$TARGET_DIR"
-fi
-
-# Convert to absolute path
-TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
-
-# Create scripts subdirectory
-SCRIPTS_DIR="$TARGET_DIR/scripts/ralph2"
-mkdir -p "$SCRIPTS_DIR"
-
-echo ""
-echo -e "${CYAN}========================================"
-echo -e "  Ralph2 Setup"
-echo -e "========================================${NC}"
-echo ""
-echo "Target: $TARGET_DIR"
-echo ""
 
 # Function to copy file with check
 copy_file() {
@@ -121,6 +113,106 @@ copy_file() {
     fi
 }
 
+# Install skills globally
+install_global_skills() {
+    echo -e "${BLUE}Installing skills globally...${NC}"
+
+    # Get the actual user's home directory (not root's when using sudo)
+    if [ -n "$SUDO_USER" ]; then
+        USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+    else
+        USER_HOME="$HOME"
+    fi
+
+    # Amp skills directory
+    AMP_SKILLS_DIR="$USER_HOME/.config/amp/skills"
+    if [ -d "$RALPH2_DIR/skills" ]; then
+        echo -e "  ${BLUE}Amp skills -> $AMP_SKILLS_DIR${NC}"
+        mkdir -p "$AMP_SKILLS_DIR"
+
+        for skill_dir in "$RALPH2_DIR/skills/"*/; do
+            skill_name=$(basename "$skill_dir")
+            if [ -d "$AMP_SKILLS_DIR/$skill_name" ] && [ "$FORCE" != true ]; then
+                echo -e "    ${YELLOW}[SKIP]${NC} $skill_name (exists)"
+            else
+                cp -r "$skill_dir" "$AMP_SKILLS_DIR/"
+                echo -e "    ${GREEN}[COPY]${NC} $skill_name"
+            fi
+        done
+
+        # Fix ownership if running as sudo
+        if [ -n "$SUDO_USER" ]; then
+            chown -R "$SUDO_USER:$SUDO_USER" "$USER_HOME/.config/amp" 2>/dev/null || true
+        fi
+    fi
+
+    # Claude Code skills directory
+    CLAUDE_SKILLS_DIR="$USER_HOME/.claude/skills"
+    if [ -d "$RALPH2_DIR/skills" ]; then
+        echo -e "  ${BLUE}Claude skills -> $CLAUDE_SKILLS_DIR${NC}"
+        mkdir -p "$CLAUDE_SKILLS_DIR"
+
+        for skill_dir in "$RALPH2_DIR/skills/"*/; do
+            skill_name=$(basename "$skill_dir")
+            if [ -d "$CLAUDE_SKILLS_DIR/$skill_name" ] && [ "$FORCE" != true ]; then
+                echo -e "    ${YELLOW}[SKIP]${NC} $skill_name (exists)"
+            else
+                cp -r "$skill_dir" "$CLAUDE_SKILLS_DIR/"
+                echo -e "    ${GREEN}[COPY]${NC} $skill_name"
+            fi
+        done
+
+        # Fix ownership if running as sudo
+        if [ -n "$SUDO_USER" ]; then
+            chown -R "$SUDO_USER:$SUDO_USER" "$USER_HOME/.claude" 2>/dev/null || true
+        fi
+    fi
+
+    echo -e "  ${GREEN}[DONE]${NC} Global skills installed"
+}
+
+echo ""
+echo -e "${CYAN}========================================"
+echo -e "  Ralph2 Setup"
+echo -e "========================================${NC}"
+echo ""
+
+# Install global skills (unless skipped)
+if [ "$SKIP_SKILLS" = false ]; then
+    install_global_skills
+    echo ""
+fi
+
+# Exit if skills-only mode
+if [ "$SKILLS_ONLY" = true ]; then
+    echo -e "${GREEN}Skills installation complete!${NC}"
+    echo ""
+    echo "Skills installed to:"
+    echo "  - ~/.config/amp/skills/prd"
+    echo "  - ~/.config/amp/skills/ralph"
+    echo "  - ~/.claude/skills/prd"
+    echo "  - ~/.claude/skills/ralph"
+    echo ""
+    echo "Use '/prd' to generate PRDs and '/ralph' to convert to JSON."
+    exit 0
+fi
+
+# Create directory if it doesn't exist
+if [ ! -d "$TARGET_DIR" ]; then
+    echo -e "${BLUE}Creating directory: $TARGET_DIR${NC}"
+    mkdir -p "$TARGET_DIR"
+fi
+
+# Convert to absolute path
+TARGET_DIR="$(cd "$TARGET_DIR" && pwd)"
+
+# Create scripts/ralph subdirectory (following ralph convention)
+SCRIPTS_DIR="$TARGET_DIR/scripts/ralph"
+mkdir -p "$SCRIPTS_DIR"
+
+echo "Target: $TARGET_DIR"
+echo ""
+
 # Copy ralph2.sh
 echo -e "${BLUE}Copying ralph2 script...${NC}"
 copy_file "$RALPH2_DIR/ralph2.sh" "$SCRIPTS_DIR/ralph2.sh"
@@ -130,22 +222,12 @@ chmod +x "$SCRIPTS_DIR/ralph2.sh" 2>/dev/null || true
 echo -e "${BLUE}Copying PRD template...${NC}"
 copy_file "$RALPH2_DIR/prd.json.example" "$SCRIPTS_DIR/prd.json.example"
 
-if [ "$MINIMAL" != true ]; then
-    # Copy agent instruction files
-    echo -e "${BLUE}Copying agent instruction files...${NC}"
-    copy_file "$RALPH2_DIR/prompt.md" "$SCRIPTS_DIR/prompt.md"
-    copy_file "$RALPH2_DIR/CLAUDE.md" "$SCRIPTS_DIR/CLAUDE.md"
-    copy_file "$RALPH2_DIR/CODEX.md" "$SCRIPTS_DIR/CODEX.md"
-    copy_file "$RALPH2_DIR/AGENTS.md" "$SCRIPTS_DIR/AGENTS.md"
-
-    # Copy skills if they exist
-    if [ -d "$RALPH2_DIR/skills" ] && [ "$(ls -A $RALPH2_DIR/skills 2>/dev/null)" ]; then
-        echo -e "${BLUE}Copying skills...${NC}"
-        mkdir -p "$SCRIPTS_DIR/skills"
-        cp -r "$RALPH2_DIR/skills/"* "$SCRIPTS_DIR/skills/" 2>/dev/null || true
-        echo -e "  ${GREEN}[COPY]${NC} skills/"
-    fi
-fi
+# Copy agent instruction files
+echo -e "${BLUE}Copying agent instruction files...${NC}"
+copy_file "$RALPH2_DIR/prompt.md" "$SCRIPTS_DIR/prompt.md"
+copy_file "$RALPH2_DIR/CLAUDE.md" "$SCRIPTS_DIR/CLAUDE.md"
+copy_file "$RALPH2_DIR/CODEX.md" "$SCRIPTS_DIR/CODEX.md"
+copy_file "$RALPH2_DIR/AGENTS.md" "$SCRIPTS_DIR/AGENTS.md"
 
 # Create progress.txt if it doesn't exist
 if [ ! -f "$SCRIPTS_DIR/progress.txt" ]; then
@@ -175,7 +257,7 @@ fi
 
 # Create symlink to ralph2 in project root for convenience
 if [ ! -f "$TARGET_DIR/ralph2" ] || [ "$FORCE" = true ]; then
-    ln -sf "scripts/ralph2/ralph2.sh" "$TARGET_DIR/ralph2" 2>/dev/null || true
+    ln -sf "scripts/ralph/ralph2.sh" "$TARGET_DIR/ralph2" 2>/dev/null || true
     echo -e "${BLUE}Created symlink: ./ralph2${NC}"
 fi
 
@@ -202,9 +284,9 @@ This project uses ralph2 for autonomous AI agent loops.
 ```
 
 ### Files
-- `scripts/ralph2/` - Ralph2 configuration and scripts
-- `scripts/ralph2/prd.json` - Product Requirements Document
-- `scripts/ralph2/progress.txt` - Progress log with learnings
+- `scripts/ralph/` - Ralph2 configuration and scripts
+- `scripts/ralph/prd.json` - Product Requirements Document
+- `scripts/ralph/progress.txt` - Progress log with learnings
 
 ### Notifications
 Use `alertme` and `promptme` for communication:
@@ -238,5 +320,5 @@ echo "     ./ralph2               # Start agent loop"
 echo ""
 echo "  4. Monitor progress:"
 echo "     ./ralph2 --list        # See all tasks"
-echo "     cat scripts/ralph2/progress.txt"
+echo "     cat scripts/ralph/progress.txt"
 echo ""

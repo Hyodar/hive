@@ -113,12 +113,23 @@ ralphsetup /path/to/project
 cd /path/to/project
 
 # Customize PRD
-cp scripts/ralph2/prd.json.example scripts/ralph2/prd.json
+cp scripts/ralph/prd.json.example scripts/ralph/prd.json
 # Edit prd.json with your tasks
 
 # Run
 ./ralph2 --status
 ./ralph2
+```
+
+#### Install Skills Only
+
+```bash
+# Install skills globally without setting up a project
+ralphsetup --skills-only
+
+# Skills are installed to:
+# ~/.config/amp/skills/prd, ~/.config/amp/skills/ralph
+# ~/.claude/skills/prd, ~/.claude/skills/ralph
 ```
 
 ## Configuration
