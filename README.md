@@ -20,7 +20,7 @@ cd agent-setup
 sudo ./setup.sh
 
 # Configure Telegram bot
-telegram-bot-setup
+tgsetup
 
 # Initialize ralph2 in a project
 ralphsetup /path/to/your/project
@@ -126,7 +126,7 @@ cp scripts/ralph2/prd.json.example scripts/ralph2/prd.json
 ### Telegram Bot Setup
 
 1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
-2. Run `telegram-bot-setup` and enter your bot token
+2. Run `tgsetup` and enter your bot token
 3. Send the binding phrase to your bot to link the chat
 4. The bot runs as a systemd service (`agent-telegram-bot`)
 
@@ -152,11 +152,11 @@ sudo systemctl restart agent-telegram-bot
 
 ```
 agent-setup/
-├── setup.sh                    # Main installation script
+├── setup.sh                    # Main installation script (uses nvm + Node 24)
 ├── telegram-bot/
 │   ├── agent_telegram_bot.py   # Telegram bot service
 │   ├── agent-telegram-bot.service  # systemd service
-│   ├── telegram-bot-setup      # Setup wizard
+│   ├── tgsetup                 # Setup wizard
 │   ├── alertme                 # Alert script
 │   └── promptme                # Prompt script
 └── ralph2/
@@ -166,7 +166,10 @@ agent-setup/
     ├── CLAUDE.md               # Claude Code instructions
     ├── CODEX.md                # Codex instructions
     ├── prompt.md               # Amp instructions
-    └── prd.json.example        # PRD template
+    ├── prd.json.example        # PRD template
+    └── skills/
+        ├── prd/SKILL.md        # PRD generator skill
+        └── ralph/SKILL.md      # PRD to JSON converter skill
 ```
 
 ## Requirements

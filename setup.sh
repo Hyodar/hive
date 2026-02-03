@@ -44,28 +44,77 @@ install_dependencies() {
         wget \
         git \
         jq \
-        python3 \
-        python3-pip \
-        python3-venv \
         gnupg \
         apt-transport-https \
         ca-certificates \
         software-properties-common \
         unzip \
-        build-essential
+        build-essential \
+        netcat-openbsd
     log_success "Basic dependencies installed"
 }
 
-# Install Node.js (required for some AI tools)
-install_nodejs() {
-    log_info "Installing Node.js..."
-    if ! command -v node &> /dev/null; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-        log_success "Node.js installed"
-    else
-        log_info "Node.js already installed"
+# Install Python 3 with pip
+install_python() {
+    log_info "Installing Python 3 and pip..."
+    apt-get install -y \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python3-full
+
+    # Ensure pip is available
+    if ! command -v pip3 &> /dev/null; then
+        log_info "Installing pip via get-pip.py..."
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+        python3 /tmp/get-pip.py
+        rm /tmp/get-pip.py
     fi
+
+    log_success "Python 3 and pip installed"
+}
+
+# Install nvm and Node.js 24
+install_nodejs() {
+    log_info "Installing nvm and Node.js 24..."
+
+    # Install nvm system-wide
+    export NVM_DIR="/usr/local/nvm"
+    mkdir -p "$NVM_DIR"
+
+    if [ ! -f "$NVM_DIR/nvm.sh" ]; then
+        log_info "Downloading and installing nvm..."
+        curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | NVM_DIR="$NVM_DIR" bash
+    fi
+
+    # Source nvm
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+    # Install Node.js 24
+    log_info "Installing Node.js 24..."
+    nvm install 24
+    nvm use 24
+    nvm alias default 24
+
+    # Create system-wide symlinks
+    NODE_PATH=$(nvm which 24)
+    NODE_DIR=$(dirname "$NODE_PATH")
+    ln -sf "$NODE_PATH" /usr/local/bin/node
+    ln -sf "$NODE_DIR/npm" /usr/local/bin/npm
+    ln -sf "$NODE_DIR/npx" /usr/local/bin/npx
+
+    # Add nvm to system profile for all users
+    cat > /etc/profile.d/nvm.sh << 'NVMEOF'
+export NVM_DIR="/usr/local/nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+NVMEOF
+
+    chmod +x /etc/profile.d/nvm.sh
+
+    log_success "nvm and Node.js 24 installed"
+    log_info "Node version: $(node --version)"
+    log_info "npm version: $(npm --version)"
 }
 
 # Install Claude Code
@@ -226,15 +275,15 @@ EOF
     systemctl daemon-reload
 
     log_success "Telegram bot service configured"
-    log_info "Run 'telegram-bot-setup' to configure the bot"
+    log_info "Run 'tgsetup' to configure the bot"
 }
 
 # Install telegram bot setup script
 install_telegram_setup() {
     log_info "Installing Telegram bot setup script..."
-    cp "$SCRIPT_DIR/telegram-bot/telegram-bot-setup" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/telegram-bot-setup"
-    log_success "Telegram bot setup script installed"
+    cp "$SCRIPT_DIR/telegram-bot/tgsetup" "$BIN_DIR/"
+    chmod +x "$BIN_DIR/tgsetup"
+    log_success "Telegram bot setup script installed (tgsetup)"
 }
 
 # Install ralph2 and ralphsetup
@@ -287,6 +336,7 @@ main() {
 
     update_system
     install_dependencies
+    install_python
     install_nodejs
 
     echo ""
@@ -321,7 +371,7 @@ main() {
     echo "========================================"
     echo ""
     echo "Next steps:"
-    echo "  1. Run 'telegram-bot-setup' to configure the Telegram bot"
+    echo "  1. Run 'tgsetup' to configure the Telegram bot"
     echo "  2. Run 'sudo tailscale up' to connect to your tailnet"
     echo "  3. Use 'xclaude', 'xcodex', 'xamp' for sandboxless AI tool execution"
     echo "  4. Use 'alertme' and 'promptme' for notifications"
