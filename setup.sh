@@ -57,17 +57,22 @@ install_dependencies() {
 # Install Python 3 with pip
 install_python() {
     log_info "Installing Python 3 and pip..."
+
+    # Core python packages (available on both Debian and Ubuntu)
     apt-get install -y \
         python3 \
         python3-pip \
         python3-venv \
-        python3-full
+        python3-dev
 
-    # Ensure pip is available
+    # python3-full is Debian-specific, install if available
+    apt-get install -y python3-full 2>/dev/null || true
+
+    # Ensure pip is available (some Ubuntu versions need this)
     if ! command -v pip3 &> /dev/null; then
         log_info "Installing pip via get-pip.py..."
         curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-        python3 /tmp/get-pip.py
+        python3 /tmp/get-pip.py --break-system-packages
         rm /tmp/get-pip.py
     fi
 
