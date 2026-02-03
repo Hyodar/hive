@@ -35,7 +35,7 @@ Sandboxless execution wrappers for autonomous agent work:
 | Command | Tool | Description |
 |---------|------|-------------|
 | `xclaude` | Claude Code | `claude --dangerously-skip-permissions` |
-| `xcodex` | Codex | `codex --dangerously-auto-approve` |
+| `xcodex` | Codex | `codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh"` |
 | `xamp` | Amp | `amp --dangerously-allow-all` |
 
 ### Telegram Notifications

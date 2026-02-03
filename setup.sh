@@ -228,7 +228,8 @@ EOF
     cat > "$BIN_DIR/xcodex" << 'EOF'
 #!/bin/bash
 # xcodex - Run Codex without sandbox and permission prompts
-exec codex --dangerously-auto-approve "$@"
+# Uses gpt-5.2-codex xhigh model with full dangerous mode
+exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" "$@"
 EOF
     chmod +x "$BIN_DIR/xcodex"
 
