@@ -434,24 +434,9 @@ for i in $(seq 1 $MAX_ITERATIONS); do
             OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
             ;;
         codex)
-            OUTPUT=$(codex --dangerously-auto-approve --quiet < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
             ;;
     esac
-
-    # Check for completion signal
-    if echo "$OUTPUT" | grep -q "<promise>COMPLETE</promise>"; then
-        echo ""
-        echo -e "${GREEN}========================================"
-        echo -e "  Ralph2 completed all tasks!"
-        echo -e "  Finished at iteration $i of $MAX_ITERATIONS"
-        echo -e "========================================${NC}"
-        if [ "$ENABLE_ALERTS" = true ]; then
-            alertme --title "Ralph2 Complete" \
-                    --description "All tasks completed successfully in $i iterations" \
-                    --status success 2>/dev/null || true
-        fi
-        exit 0
-    fi
 
     # Check for errors in output
     if echo "$OUTPUT" | grep -qiE "(fatal error|exception|panic|segfault)"; then
@@ -464,7 +449,30 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     fi
 
     echo ""
-    echo -e "${GREEN}Iteration $i complete. Continuing...${NC}"
+    echo -e "${GREEN}Iteration $i complete.${NC}"
+
+    # Check completion via jq on prd.json (authoritative source)
+    if jq_all_complete; then
+        echo ""
+        echo -e "${GREEN}========================================"
+        echo -e "  Ralph2 completed all tasks!"
+        echo -e "  Finished at iteration $i of $MAX_ITERATIONS"
+        echo -e "========================================${NC}"
+        show_status
+        if [ "$ENABLE_ALERTS" = true ]; then
+            alertme --title "Ralph2 Complete" \
+                    --description "All tasks completed successfully in $i iterations" \
+                    --status success 2>/dev/null || true
+        fi
+        exit 0
+    fi
+
+    # Show progress after each iteration
+    echo ""
+    COMPLETED=$(jq_count_completed)
+    TOTAL=$(jq_count_total)
+    echo -e "Progress: ${GREEN}$COMPLETED${NC}/$TOTAL tasks complete"
+    echo -e "Continuing to next iteration..."
     sleep 2
 done
 

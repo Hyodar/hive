@@ -136,14 +136,14 @@ ANSWER=$(promptme --title "Review Required" --description "Is this implementatio
 4. **Use standard tools** - Prefer standard library functions over custom implementations
 5. **Comment edge cases** - Add comments for non-obvious logic
 
-## Stop Condition
+## Completion
 
-After completing a user story, check if ALL stories have `passes: true`.
+After completing a user story:
+1. Update the PRD to set `passes: true` for the completed story
+2. The ralph2 loop will automatically detect completion via `jq` on prd.json
+3. End your response normally - another iteration will pick up the next story if needed
 
-If ALL stories are complete and passing, reply with:
-<promise>COMPLETE</promise>
-
-If there are still stories with `passes: false`, end your response normally (another iteration will pick up the next story).
+**Completion is determined by checking prd.json** - when all stories have `passes: true`, ralph2 will exit successfully.
 
 ## Important
 

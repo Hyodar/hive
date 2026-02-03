@@ -144,14 +144,14 @@ For any story that changes UI, you MUST verify it works in the browser:
 
 A frontend story is NOT complete until browser verification passes.
 
-## Stop Condition
+## Completion
 
-After completing a user story, check if ALL stories have `passes: true`.
+After completing a user story:
+1. Update the PRD to set `passes: true` for the completed story
+2. The ralph2 loop will automatically detect completion via `jq` on prd.json
+3. End your response normally - another iteration will pick up the next story if needed
 
-If ALL stories are complete and passing, reply with:
-<promise>COMPLETE</promise>
-
-If there are still stories with `passes: false`, end your response normally (another iteration will pick up the next story).
+**Completion is determined by checking prd.json** - when all stories have `passes: true`, ralph2 will exit successfully.
 
 ## Important
 
