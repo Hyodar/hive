@@ -292,6 +292,33 @@ install_telegram_setup() {
     log_success "Telegram bot setup script installed (tgsetup)"
 }
 
+# Setup Signal Broker service
+setup_signal_broker() {
+    log_info "Setting up Signal Broker service..."
+
+    # Create config directory if not exists
+    mkdir -p "$CONFIG_DIR"
+
+    # Copy Python broker script
+    cp "$SCRIPT_DIR/signal-broker/signal_broker.py" "$CONFIG_DIR/"
+
+    # Copy signalme and listento scripts
+    cp "$SCRIPT_DIR/signal-broker/signalme" "$BIN_DIR/"
+    cp "$SCRIPT_DIR/signal-broker/listento" "$BIN_DIR/"
+    chmod +x "$BIN_DIR/signalme"
+    chmod +x "$BIN_DIR/listento"
+
+    # Install systemd service
+    cp "$SCRIPT_DIR/signal-broker/signal-broker.service" /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable signal-broker
+    systemctl start signal-broker
+
+    log_success "Signal Broker service configured and started"
+    log_info "Use 'signalme --id <id> --content <content>' to publish signals"
+    log_info "Use 'listento --id <id>' to subscribe and wait for signals"
+}
+
 # Install ralph2 and ralphsetup
 install_ralph2() {
     log_info "Installing ralph2 and ralphsetup..."
@@ -369,6 +396,7 @@ main() {
     setup_aliases
     setup_telegram_bot
     install_telegram_setup
+    setup_signal_broker
     install_ralph2
 
     echo ""
@@ -381,8 +409,9 @@ main() {
     echo "  2. Run 'sudo tailscale up' to connect to your tailnet"
     echo "  3. Use 'xclaude', 'xcodex', 'xamp' for sandboxless AI tool execution"
     echo "  4. Use 'alertme' and 'promptme' for notifications"
-    echo "  5. Use 'ralph2' for autonomous agent loops"
-    echo "  6. Use 'ralphsetup <directory>' to initialize ralph2 in a project"
+    echo "  5. Use 'signalme' and 'listento' for internal signal pub/sub"
+    echo "  6. Use 'ralph2' for autonomous agent loops"
+    echo "  7. Use 'ralphsetup <directory>' to initialize ralph2 in a project"
     echo ""
 }
 

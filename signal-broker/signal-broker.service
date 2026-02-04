@@ -1,0 +1,22 @@
+[Unit]
+Description=Signal Broker Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/etc/agent-setup
+ExecStart=/etc/agent-setup/venv/bin/python3 /etc/agent-setup/signal_broker.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/etc/agent-setup /tmp
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

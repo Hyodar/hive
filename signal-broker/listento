@@ -1,0 +1,126 @@
+#!/bin/bash
+# listento - Subscribe to signals from the signal broker
+# Usage: listento --id <signal_id> [--timeout <seconds>]
+# Blocks until a signal with the specified ID is received
+
+SOCKET_PATH="/tmp/signal_broker.sock"
+
+# Default values
+SIGNAL_ID=""
+TIMEOUT=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --id|-i)
+            SIGNAL_ID="$2"
+            shift 2
+            ;;
+        --timeout|-t)
+            TIMEOUT="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "listento - Subscribe to signals from the signal broker"
+            echo ""
+            echo "Usage: listento --id <signal_id> [--timeout <seconds>]"
+            echo ""
+            echo "Options:"
+            echo "  --id, -i       Signal ID to listen for (required)"
+            echo "  --timeout, -t  Timeout in seconds (optional, default: wait indefinitely)"
+            echo "  --help, -h     Show this help"
+            echo ""
+            echo "Output:"
+            echo "  Outputs the signal content on stdout when received"
+            echo ""
+            echo "Exit codes:"
+            echo "  0 - Signal received successfully"
+            echo "  1 - Error occurred"
+            echo "  2 - Timeout waiting for signal"
+            echo ""
+            echo "Examples:"
+            echo "  listento --id task_finished              # Wait indefinitely"
+            echo "  listento --id task_started --timeout 60  # Wait up to 60 seconds"
+            echo "  CONTENT=\$(listento --id build_done)      # Capture signal content"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Use --help for usage information" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$SIGNAL_ID" ]; then
+    echo "Error: --id is required" >&2
+    echo "Use --help for usage information" >&2
+    exit 1
+fi
+
+# Check if socket exists
+if [ ! -S "$SOCKET_PATH" ]; then
+    echo "Error: Signal broker service is not running" >&2
+    echo "Start it with: sudo systemctl start signal-broker" >&2
+    exit 1
+fi
+
+# Escape special characters for JSON
+escape_json() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+ID_JSON=$(escape_json "$SIGNAL_ID")
+
+# Build JSON request
+if [ -n "$TIMEOUT" ]; then
+    REQUEST=$(cat << EOF
+{
+    "action": "subscribe",
+    "id": $ID_JSON,
+    "timeout": $TIMEOUT
+}
+EOF
+)
+    # Use nc with a slightly longer timeout than the broker timeout
+    NC_TIMEOUT=$((TIMEOUT + 5))
+else
+    REQUEST=$(cat << EOF
+{
+    "action": "subscribe",
+    "id": $ID_JSON
+}
+EOF
+)
+    # For indefinite wait, use a very long timeout (1 hour)
+    NC_TIMEOUT=3600
+fi
+
+# Send request via socket and wait for response
+# The broker will block until a signal arrives or timeout
+RESPONSE=$(echo "$REQUEST" | nc -U -w "$NC_TIMEOUT" "$SOCKET_PATH" 2>/dev/null)
+
+if [ -z "$RESPONSE" ]; then
+    echo "Error: Connection to signal broker lost" >&2
+    exit 1
+fi
+
+# Check response
+SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+if [ "$SUCCESS" = "true" ]; then
+    # Output the signal content to stdout
+    CONTENT=$(echo "$RESPONSE" | jq -r '.signal.content // ""')
+    echo "$CONTENT"
+    exit 0
+else
+    IS_TIMEOUT=$(echo "$RESPONSE" | jq -r '.timeout // false')
+    if [ "$IS_TIMEOUT" = "true" ]; then
+        echo "Timeout waiting for signal '$SIGNAL_ID'" >&2
+        exit 2
+    else
+        ERROR=$(echo "$RESPONSE" | jq -r '.error // "Unknown error"')
+        echo "Error: $ERROR" >&2
+        exit 1
+    fi
+fi

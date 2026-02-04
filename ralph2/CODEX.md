@@ -8,13 +8,16 @@ You are an autonomous coding agent working on a software project using OpenAI Co
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
-6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update CODEX.md files if you discover reusable patterns (see below)
-8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
-9. Update the PRD to set `passes: true` for the completed story
-10. Append your progress to `progress.txt`
-11. **Send completion alert using `alertme`** (see Notifications section)
+5. **Signal task start:** `signalme --id task_started --content "[Story ID]"`
+6. Implement that single user story
+7. **Signal implementation done:** `signalme --id task_executed --content "[Story ID]"`
+8. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
+9. Update CODEX.md files if you discover reusable patterns (see below)
+10. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+11. Update the PRD to set `passes: true` for the completed story
+12. Append your progress to `progress.txt`
+13. **Send completion alert using `alertme`** (see Notifications section)
+14. **Signal task finished:** `signalme --id task_finished --content "[Story ID]"`
 
 ## Task Selection with jq
 
@@ -127,6 +130,29 @@ ANSWER=$(promptme --title "Review Required" --description "Is this implementatio
 - An error occurs that blocks progress
 - You discover something important
 - The iteration is ending
+
+## Signals (signalme)
+
+**CRITICAL:** Use `signalme` to signal task lifecycle events. Ralph2 monitors these signals to detect hangs.
+
+### signalme - Publish internal signals
+```bash
+# Signal task started (IMMEDIATELY after picking a task)
+signalme --id task_started --content "US-001"
+
+# Signal implementation done (BEFORE running tests)
+signalme --id task_executed --content "US-001"
+
+# Signal task finished (AFTER tests pass and commit)
+signalme --id task_finished --content "US-001"
+```
+
+**Signal lifecycle:**
+1. `task_started` - Right after selecting a task from prd.json
+2. `task_executed` - After implementation, before running quality checks
+3. `task_finished` - After all checks pass, commit done, and PRD updated
+
+These signals are used by ralph2 to detect if an agent is hanging. If more than 3 minutes pass between `task_finished` and the next `task_started`, the iteration is forcefully terminated.
 
 ## Codex-Specific Guidelines
 

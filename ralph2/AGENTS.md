@@ -79,6 +79,33 @@ RESPONSE=$(promptme --title "Question" --description "What should I do?" --timeo
 - Use `promptme` sparingly - only when truly stuck
 - Include relevant context in the description
 
+## Signals: signalme & listento
+
+Ralph2 uses internal signals for monitoring agent lifecycle and detecting hangs.
+
+### signalme - Publish signals
+```bash
+signalme --id task_started --content "US-001"    # When starting a task
+signalme --id task_executed --content "US-001"   # After implementation, before tests
+signalme --id task_finished --content "US-001"   # After tests pass and commit
+```
+
+### listento - Subscribe to signals
+```bash
+# Wait for a signal (blocks until received)
+CONTENT=$(listento --id task_finished)
+
+# Wait with timeout (returns exit code 2 on timeout)
+CONTENT=$(listento --id task_started --timeout 60)
+```
+
+**Signal lifecycle (CRITICAL - always use these!):**
+1. `task_started` - Immediately after selecting a task
+2. `task_executed` - After implementation, before quality checks
+3. `task_finished` - After all checks pass, commit done
+
+Ralph2's hang detection monitors these signals. If no `task_started` arrives within 3 minutes after `task_finished`, the iteration is forcefully terminated.
+
 ## Patterns
 
 - Each iteration spawns a fresh AI instance with clean context

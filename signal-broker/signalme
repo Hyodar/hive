@@ -1,0 +1,100 @@
+#!/bin/bash
+# signalme - Publish signals to the signal broker
+# Usage: signalme --id <signal_id> --content <content>
+
+SOCKET_PATH="/tmp/signal_broker.sock"
+
+# Default values
+SIGNAL_ID=""
+CONTENT=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --id|-i)
+            SIGNAL_ID="$2"
+            shift 2
+            ;;
+        --content|-c)
+            CONTENT="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "signalme - Publish signals to the signal broker"
+            echo ""
+            echo "Usage: signalme --id <signal_id> --content <content>"
+            echo ""
+            echo "Options:"
+            echo "  --id, -i       Signal ID to publish (required)"
+            echo "  --content, -c  Content/payload of the signal (optional)"
+            echo "  --help, -h     Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  signalme --id task_started --content 'US-001'"
+            echo "  signalme --id task_finished --content 'US-001: Add login'"
+            echo "  signalme --id build_complete"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate required arguments
+if [ -z "$SIGNAL_ID" ]; then
+    echo "Error: --id is required"
+    echo "Use --help for usage information"
+    exit 1
+fi
+
+# Check if socket exists
+if [ ! -S "$SOCKET_PATH" ]; then
+    echo "Error: Signal broker service is not running"
+    echo "Start it with: sudo systemctl start signal-broker"
+    exit 1
+fi
+
+# Escape special characters for JSON
+escape_json() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+}
+
+ID_JSON=$(escape_json "$SIGNAL_ID")
+CONTENT_JSON=$(escape_json "$CONTENT")
+
+# Build JSON request
+REQUEST=$(cat << EOF
+{
+    "action": "publish",
+    "id": $ID_JSON,
+    "content": $CONTENT_JSON
+}
+EOF
+)
+
+# Send request via socket
+RESPONSE=$(echo "$REQUEST" | nc -U -w 5 "$SOCKET_PATH" 2>/dev/null)
+
+if [ -z "$RESPONSE" ]; then
+    echo "Error: No response from signal broker"
+    exit 1
+fi
+
+# Check response
+SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+if [ "$SUCCESS" = "true" ]; then
+    SUBSCRIBERS=$(echo "$RESPONSE" | jq -r '.subscribers // 0')
+    if [ "$SUBSCRIBERS" -gt 0 ]; then
+        echo "Signal '$SIGNAL_ID' sent to $SUBSCRIBERS listener(s)"
+    else
+        echo "Signal '$SIGNAL_ID' published (no active listeners)"
+    fi
+    exit 0
+else
+    ERROR=$(echo "$RESPONSE" | jq -r '.error // "Unknown error"')
+    echo "Error: $ERROR"
+    exit 1
+fi

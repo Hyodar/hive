@@ -37,6 +37,7 @@ LIST_TASKS=false
 RESET_TASKS=false
 ENABLE_ALERTS=false
 INTERACTIVE=false
+HANG_TIMEOUT=180  # 3 minutes between task_finished and next task_started
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -191,6 +192,67 @@ jq_all_complete() {
 jq_reset_all() {
     jq '.userStories |= map(.passes = false)' "$PRD_FILE" > "$PRD_FILE.tmp"
     mv "$PRD_FILE.tmp" "$PRD_FILE"
+}
+
+# Hang detection watchdog
+# Monitors signals to detect if agent is hanging after task_finished
+# Kills agent if no task_started within HANG_TIMEOUT seconds after task_finished
+start_hang_watchdog() {
+    local agent_pid=$1
+    local watchdog_log="$SCRIPT_DIR/.watchdog.log"
+
+    (
+        echo "[$(date)] Watchdog started for PID $agent_pid" >> "$watchdog_log"
+
+        while kill -0 "$agent_pid" 2>/dev/null; do
+            # Wait for task_finished signal with a reasonable timeout
+            # Use a shorter poll interval to check if agent is still running
+            SIGNAL_CONTENT=$(listento --id task_finished --timeout 30 2>/dev/null) || {
+                # Timeout or error - check if agent still running and continue
+                continue
+            }
+
+            echo "[$(date)] task_finished received: $SIGNAL_CONTENT" >> "$watchdog_log"
+
+            # Now wait for task_started with HANG_TIMEOUT
+            # If timeout, agent might be hanging
+            if ! listento --id task_started --timeout "$HANG_TIMEOUT" >/dev/null 2>&1; then
+                # Check if agent is still running
+                if kill -0 "$agent_pid" 2>/dev/null; then
+                    echo "[$(date)] HANG DETECTED: No task_started within ${HANG_TIMEOUT}s after task_finished" >> "$watchdog_log"
+                    echo -e "${YELLOW}[WATCHDOG] Agent hanging - no task_started within ${HANG_TIMEOUT}s after task_finished${NC}" >&2
+                    echo -e "${YELLOW}[WATCHDOG] Terminating agent (PID: $agent_pid)${NC}" >&2
+
+                    # Send alert if enabled
+                    if [ "$ENABLE_ALERTS" = true ]; then
+                        alertme --title "Ralph2 Hang Detected" \
+                                --description "Agent terminated after ${HANG_TIMEOUT}s idle between tasks" \
+                                --status warning 2>/dev/null || true
+                    fi
+
+                    # Terminate the agent
+                    kill -TERM "$agent_pid" 2>/dev/null || true
+                    sleep 2
+                    kill -KILL "$agent_pid" 2>/dev/null || true
+                    exit 1
+                fi
+            else
+                echo "[$(date)] task_started received, continuing monitoring" >> "$watchdog_log"
+            fi
+        done
+
+        echo "[$(date)] Watchdog exiting - agent process ended" >> "$watchdog_log"
+    ) &
+
+    echo $!  # Return watchdog PID
+}
+
+# Clean up watchdog
+stop_hang_watchdog() {
+    local watchdog_pid=$1
+    if [ -n "$watchdog_pid" ] && kill -0 "$watchdog_pid" 2>/dev/null; then
+        kill -TERM "$watchdog_pid" 2>/dev/null || true
+    fi
 }
 
 # Show status summary
@@ -425,18 +487,42 @@ for i in $(seq 1 $MAX_ITERATIONS); do
         esac
     fi
 
-    # Run the selected tool
+    # Create temp file for output
+    OUTPUT_FILE=$(mktemp)
+    AGENT_PID=""
+    WATCHDOG_PID=""
+
+    # Run the selected tool in background
     case "$TOOL" in
         amp)
-            OUTPUT=$(cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+            cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee "$OUTPUT_FILE" &
+            AGENT_PID=$!
             ;;
         claude)
-            OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee "$OUTPUT_FILE" &
+            AGENT_PID=$!
             ;;
         codex)
-            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee "$OUTPUT_FILE" &
+            AGENT_PID=$!
             ;;
     esac
+
+    # Start hang detection watchdog (only if signal broker is available)
+    if [ -S "/tmp/signal_broker.sock" ]; then
+        WATCHDOG_PID=$(start_hang_watchdog "$AGENT_PID")
+        echo -e "${BLUE}[INFO] Hang detection enabled (${HANG_TIMEOUT}s timeout)${NC}"
+    fi
+
+    # Wait for agent to complete
+    wait "$AGENT_PID" || true
+
+    # Clean up watchdog
+    stop_hang_watchdog "$WATCHDOG_PID"
+
+    # Read output
+    OUTPUT=$(cat "$OUTPUT_FILE")
+    rm -f "$OUTPUT_FILE"
 
     # Check for errors in output
     if echo "$OUTPUT" | grep -qiE "(fatal error|exception|panic|segfault)"; then
