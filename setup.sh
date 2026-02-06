@@ -356,6 +356,18 @@ EOF
     log_success "ralph2 and ralphsetup installed"
 }
 
+# Install repo-transfer tools
+install_repo_transfer() {
+    log_info "Installing repo-transfer tools..."
+
+    cp "$SCRIPT_DIR/repo-transfer/repo-send" "$BIN_DIR/"
+    cp "$SCRIPT_DIR/repo-transfer/repo-fetch" "$BIN_DIR/"
+    cp "$SCRIPT_DIR/repo-transfer/repo-receive" "$BIN_DIR/"
+    chmod +x "$BIN_DIR/repo-send" "$BIN_DIR/repo-fetch" "$BIN_DIR/repo-receive"
+
+    log_success "repo-transfer tools installed (repo-send, repo-fetch, repo-receive)"
+}
+
 # Main installation
 main() {
     check_root
@@ -396,6 +408,7 @@ main() {
     setup_telegram_bot
     install_telegram_setup
     install_ralph2
+    install_repo_transfer
 
     echo ""
     echo "========================================"
@@ -409,6 +422,7 @@ main() {
     echo "  4. Use 'alertme' and 'promptme' for notifications"
     echo "  5. Use 'ralph2' for autonomous agent loops"
     echo "  6. Use 'ralphsetup <directory>' to initialize ralph2 in a project"
+    echo "  7. Use 'repo-send <host>' and 'repo-fetch <host>' to transfer repos via bundles"
     echo ""
 }
 
