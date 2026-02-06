@@ -15,10 +15,17 @@ sudo tailscale up        # Connect to tailnet
 ### 2. Provision a worker
 
 ```bash
+# Full setup (desktop + interactive tailscale)
 hive worker setup root@192.168.1.100 --name agent-vm-1
+
+# Fully non-interactive with auth key
+hive worker setup root@192.168.1.100 --name agent-vm-1 --tailscale-key tskey-auth-xxx
+
+# CLI-only worker (no desktop, no NoMachine)
+hive worker setup root@192.168.1.100 --name agent-vm-1 --tailscale-key tskey-auth-xxx --no-desktop
 ```
 
-This SSHes into the machine, installs all AI tools and dependencies, copies the shared Telegram config, and opens a session for you to run `tailscale up`.
+This SSHes into the machine, installs all AI tools and dependencies, and copies the shared Telegram config. With `--tailscale-key`, Tailscale is configured automatically (no manual SSH step). With `--no-desktop`, NoMachine, Cinnamon, and VSCode are skipped.
 
 ### 3. Send work, get results
 
@@ -56,7 +63,7 @@ ralph2 --tool <claude|codex|amp> <iterations>
 
 | Command | Description |
 |---------|-------------|
-| `hive worker setup <host> --name <name>` | Full remote setup via SSH |
+| `hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]` | Full remote setup via SSH |
 | `hive worker add <name> [--host <host>]` | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
