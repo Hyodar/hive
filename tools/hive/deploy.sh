@@ -157,13 +157,15 @@ hetzner_order_server() {
         exit 1
     fi
 
-    # Extract server details from order response
-    local SERVER_NUMBER SERVER_IP
+    # Extract transaction ID — this is the stable handle for polling.
+    # server_number and server_ip start as null and get populated when ready.
+    local TXN_ID SERVER_NUMBER SERVER_IP
+    TXN_ID=$(echo "$RESPONSE" | jq -r '.transaction.id // empty')
     SERVER_NUMBER=$(echo "$RESPONSE" | jq -r '.transaction.server_number // empty')
     SERVER_IP=$(echo "$RESPONSE" | jq -r '.transaction.server_ip // empty')
 
-    if [ -z "$SERVER_NUMBER" ]; then
-        echo -e "${YELLOW}[WARN]${NC} Could not extract server number from response."
+    if [ -z "$TXN_ID" ]; then
+        echo -e "${YELLOW}[WARN]${NC} Could not extract transaction ID from response."
         echo "Raw response:"
         echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
         echo ""
@@ -171,28 +173,23 @@ hetzner_order_server() {
         exit 1
     fi
 
-    echo -e "${GREEN}[OK]${NC} Server ordered (number: $SERVER_NUMBER)"
-    if [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ]; then
-        echo -e "  IP: $SERVER_IP"
-    fi
+    echo -e "${GREEN}[OK]${NC} Order placed (transaction: $TXN_ID)"
+    [ -n "$SERVER_NUMBER" ] && [ "$SERVER_NUMBER" != "null" ] && echo "  Server number: $SERVER_NUMBER"
+    [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ] && echo "  IP: $SERVER_IP"
 
-    # Return server_number and server_ip separated by a space
-    echo "RESULT $SERVER_NUMBER $SERVER_IP"
+    # Return transaction_id, server_number, server_ip
+    echo "RESULT $TXN_ID $SERVER_NUMBER $SERVER_IP"
 }
 
-hetzner_get_server() {
-    local SERVER_NUMBER="$1"
-    hetzner_api GET "/server/$SERVER_NUMBER"
+hetzner_get_transaction() {
+    local TXN_ID="$1"
+    hetzner_api GET "/order/server/transaction/$TXN_ID"
 }
 
-hetzner_get_server_ip() {
-    local SERVER_DATA="$1"
-    echo "$SERVER_DATA" | jq -r '.server.server_ip // empty'
-}
-
-hetzner_get_server_status() {
-    local SERVER_DATA="$1"
-    echo "$SERVER_DATA" | jq -r '.server.status // "unknown"'
+hetzner_parse_transaction() {
+    local TXN_DATA="$1"
+    local FIELD="$2"
+    echo "$TXN_DATA" | jq -r ".transaction.$FIELD // empty"
 }
 
 # ===========================================================================
@@ -206,8 +203,9 @@ save_deployment() {
     local PRODUCT="$4"
     local LOCATION="$5"
     local SSH_KEY_PATH="$6"
-    local SERVER_NUMBER="$7"
-    local SERVER_IP="${8:-}"
+    local TXN_ID="$7"
+    local SERVER_NUMBER="${8:-}"
+    local SERVER_IP="${9:-}"
 
     ensure_deployments_dir
 
@@ -220,6 +218,7 @@ save_deployment() {
         --arg product "$PRODUCT" \
         --arg location "$LOCATION" \
         --arg ssh_key_path "$SSH_KEY_PATH" \
+        --arg transaction_id "$TXN_ID" \
         --arg server_number "$SERVER_NUMBER" \
         --arg server_ip "$SERVER_IP" \
         --arg ordered_at "$(date -Iseconds)" \
@@ -230,7 +229,8 @@ save_deployment() {
             product: $product,
             location: $location,
             ssh_key_path: $ssh_key_path,
-            server_number: $server_number,
+            transaction_id: $transaction_id,
+            server_number: (if $server_number == "" then null else $server_number end),
             server_ip: (if $server_ip == "" then null else $server_ip end),
             ordered_at: $ordered_at
         }' > "$DEPLOY_FILE"
@@ -353,28 +353,29 @@ deploy_new() {
             KEY_FINGERPRINT=$(echo "$KEY_FP_OUTPUT" | tail -1)
 
             echo -e "${BLUE}[2/4]${NC} Placing server order..."
-            local ORDER_OUTPUT SERVER_NUMBER SERVER_IP
+            local ORDER_OUTPUT TXN_ID SERVER_NUMBER SERVER_IP
             ORDER_OUTPUT=$(hetzner_order_server "$PRODUCT" "$LOCATION" "$DIST" "$KEY_FINGERPRINT")
-            # Parse the RESULT line: "RESULT <server_number> <server_ip>"
+            # Parse the RESULT line: "RESULT <txn_id> <server_number> <server_ip>"
             local RESULT_LINE
             RESULT_LINE=$(echo "$ORDER_OUTPUT" | grep "^RESULT " | tail -1)
-            SERVER_NUMBER=$(echo "$RESULT_LINE" | awk '{print $2}')
-            SERVER_IP=$(echo "$RESULT_LINE" | awk '{print $3}')
+            TXN_ID=$(echo "$RESULT_LINE" | awk '{print $2}')
+            SERVER_NUMBER=$(echo "$RESULT_LINE" | awk '{print $3}')
+            SERVER_IP=$(echo "$RESULT_LINE" | awk '{print $4}')
             # Print non-RESULT lines (status messages)
             echo "$ORDER_OUTPUT" | grep -v "^RESULT "
 
             echo -e "${BLUE}[3/4]${NC} Saving deployment state..."
             save_deployment "$NAME" "hetzner" "provisioning" \
-                "$PRODUCT" "$LOCATION" "$SSH_KEY_PATH" "$SERVER_NUMBER" "$SERVER_IP"
+                "$PRODUCT" "$LOCATION" "$SSH_KEY_PATH" "$TXN_ID" "$SERVER_NUMBER" "$SERVER_IP"
             echo -e "${GREEN}[OK]${NC} Saved to $DEPLOYMENTS_DIR/$NAME.json"
 
             echo -e "${BLUE}[4/4]${NC} Waiting for server provisioning..."
             echo ""
             echo "Dedicated server provisioning typically takes 15-60 minutes."
-            echo "Polling server status (Ctrl+C to stop — resume with --continue)..."
+            echo "Polling transaction status (Ctrl+C to stop — resume with --continue)..."
             echo ""
 
-            # If we already have an IP from the order, try SSH directly
+            # If we already have an IP from the order response, try SSH directly
             if [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ] && [ "$SERVER_IP" != "" ]; then
                 update_deployment "$NAME" "server_ip" "$SERVER_IP"
                 update_deployment "$NAME" "status" "ready"
@@ -389,22 +390,25 @@ deploy_new() {
                 return 0
             fi
 
-            # Poll for server readiness (60 attempts × 60s = ~60 minutes)
+            # Poll the transaction endpoint (60 attempts × 60s = ~60 minutes)
             local MAX_ATTEMPTS=60
             local POLL_INTERVAL=60
 
             for ATTEMPT in $(seq 1 $MAX_ATTEMPTS); do
-                local SERVER_DATA
-                SERVER_DATA=$(hetzner_get_server "$SERVER_NUMBER" 2>/dev/null) || true
+                local TXN_DATA
+                TXN_DATA=$(hetzner_get_transaction "$TXN_ID" 2>/dev/null) || true
 
-                SERVER_IP=$(hetzner_get_server_ip "$SERVER_DATA" 2>/dev/null) || true
-                local SERVER_STATUS
-                SERVER_STATUS=$(hetzner_get_server_status "$SERVER_DATA" 2>/dev/null) || true
+                local TXN_STATUS
+                TXN_STATUS=$(hetzner_parse_transaction "$TXN_DATA" "status" 2>/dev/null) || true
+                SERVER_IP=$(hetzner_parse_transaction "$TXN_DATA" "server_ip" 2>/dev/null) || true
+                SERVER_NUMBER=$(hetzner_parse_transaction "$TXN_DATA" "server_number" 2>/dev/null) || true
 
-                if [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ] && [ "$SERVER_STATUS" = "ready" ]; then
+                if [ "$TXN_STATUS" = "ready" ] && [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ]; then
                     echo ""
                     echo -e "${GREEN}[OK]${NC} Server is ready! (IP: $SERVER_IP)"
                     update_deployment "$NAME" "server_ip" "$SERVER_IP"
+                    [ -n "$SERVER_NUMBER" ] && [ "$SERVER_NUMBER" != "null" ] && \
+                        update_deployment "$NAME" "server_number" "$SERVER_NUMBER"
                     update_deployment "$NAME" "status" "ready"
 
                     if wait_for_ssh "$SERVER_IP" 30; then
@@ -418,7 +422,7 @@ deploy_new() {
                 fi
 
                 printf "\r  [%d/%d] Status: %-12s (next check in %ds)  " \
-                    "$ATTEMPT" "$MAX_ATTEMPTS" "${SERVER_STATUS:-pending}" "$POLL_INTERVAL"
+                    "$ATTEMPT" "$MAX_ATTEMPTS" "${TXN_STATUS:-pending}" "$POLL_INTERVAL"
                 sleep "$POLL_INTERVAL"
             done
 
@@ -440,10 +444,11 @@ deploy_continue() {
     local DEPLOY_DATA
     DEPLOY_DATA=$(load_deployment "$NAME")
 
-    local CLOUD STATUS SERVER_NUMBER SERVER_IP SSH_KEY_PATH PRODUCT LOCATION
+    local CLOUD STATUS TXN_ID SERVER_NUMBER SERVER_IP SSH_KEY_PATH PRODUCT LOCATION
     CLOUD=$(echo "$DEPLOY_DATA" | jq -r '.cloud')
     STATUS=$(echo "$DEPLOY_DATA" | jq -r '.status')
-    SERVER_NUMBER=$(echo "$DEPLOY_DATA" | jq -r '.server_number')
+    TXN_ID=$(echo "$DEPLOY_DATA" | jq -r '.transaction_id')
+    SERVER_NUMBER=$(echo "$DEPLOY_DATA" | jq -r '.server_number // empty')
     SERVER_IP=$(echo "$DEPLOY_DATA" | jq -r '.server_ip // empty')
     SSH_KEY_PATH=$(echo "$DEPLOY_DATA" | jq -r '.ssh_key_path')
     PRODUCT=$(echo "$DEPLOY_DATA" | jq -r '.product')
@@ -457,7 +462,7 @@ deploy_continue() {
     echo "  Cloud:          $CLOUD"
     echo "  Product:        $PRODUCT"
     echo "  Location:       $LOCATION"
-    echo "  Server Number:  $SERVER_NUMBER"
+    echo "  Transaction:    $TXN_ID"
     echo "  Server IP:      ${SERVER_IP:-not yet assigned}"
     echo "  Status:         $STATUS"
     echo ""
@@ -479,25 +484,28 @@ deploy_continue() {
             hetzner_prompt_credentials
             hetzner_check_auth
 
-            # If we don't have an IP yet, check the server status
+            # If we don't have an IP yet, poll the transaction
             if [ -z "$SERVER_IP" ] || [ "$SERVER_IP" = "null" ]; then
                 echo ""
-                echo "Checking server status..."
-                local SERVER_DATA
-                SERVER_DATA=$(hetzner_get_server "$SERVER_NUMBER")
+                echo "Checking transaction status..."
+                local TXN_DATA
+                TXN_DATA=$(hetzner_get_transaction "$TXN_ID")
 
-                SERVER_IP=$(hetzner_get_server_ip "$SERVER_DATA")
-                local SERVER_STATUS
-                SERVER_STATUS=$(hetzner_get_server_status "$SERVER_DATA")
+                local TXN_STATUS
+                TXN_STATUS=$(hetzner_parse_transaction "$TXN_DATA" "status")
+                SERVER_IP=$(hetzner_parse_transaction "$TXN_DATA" "server_ip")
+                SERVER_NUMBER=$(hetzner_parse_transaction "$TXN_DATA" "server_number")
 
                 if [ -z "$SERVER_IP" ] || [ "$SERVER_IP" = "null" ]; then
-                    echo -e "${YELLOW}[INFO]${NC} Server not ready yet (status: ${SERVER_STATUS:-unknown})"
+                    echo -e "${YELLOW}[INFO]${NC} Server not ready yet (status: ${TXN_STATUS:-unknown})"
                     echo "Try again later: hive worker deploy --continue $NAME"
                     return 0
                 fi
 
                 echo -e "${GREEN}[OK]${NC} Server is ready! (IP: $SERVER_IP)"
                 update_deployment "$NAME" "server_ip" "$SERVER_IP"
+                [ -n "$SERVER_NUMBER" ] && [ "$SERVER_NUMBER" != "null" ] && \
+                    update_deployment "$NAME" "server_number" "$SERVER_NUMBER"
                 update_deployment "$NAME" "status" "ready"
             fi
 
