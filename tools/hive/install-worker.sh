@@ -23,10 +23,72 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Parse arguments
+WORKER_NAME=""
+WORKER_PASSWORD=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --name) WORKER_NAME="$2"; shift 2 ;;
+        --password) WORKER_PASSWORD="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+
 echo "========================================"
 echo "  Hive Worker Installation"
 echo "========================================"
 echo ""
+
+# ---- Hostname ----
+
+if [ -n "$WORKER_NAME" ]; then
+    log_info "Setting hostname to '$WORKER_NAME'..."
+    hostnamectl set-hostname "$WORKER_NAME"
+    if grep -q "127.0.1.1" /etc/hosts; then
+        sed -i "s/127.0.1.1.*/127.0.1.1\t$WORKER_NAME/" /etc/hosts
+    else
+        echo "127.0.1.1	$WORKER_NAME" >> /etc/hosts
+    fi
+    log_success "Hostname: $WORKER_NAME"
+fi
+
+# ---- Worker user ----
+
+log_info "Setting up 'worker' user..."
+if ! id worker &>/dev/null; then
+    useradd -m -s /bin/bash worker
+fi
+usermod -aG sudo worker
+
+if [ -n "$WORKER_PASSWORD" ]; then
+    echo "worker:$WORKER_PASSWORD" | chpasswd
+    log_success "'worker' user created (password set)"
+else
+    passwd -l worker 2>/dev/null || true
+    log_success "'worker' user created (no password, SSH key auth only)"
+fi
+
+# NOPASSWD sudo
+echo "worker ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/worker
+chmod 440 /etc/sudoers.d/worker
+
+# Copy SSH authorized_keys from the setup user
+SETUP_USER="${SUDO_USER:-root}"
+if [ "$SETUP_USER" = "root" ]; then
+    SETUP_HOME="/root"
+else
+    SETUP_HOME=$(getent passwd "$SETUP_USER" | cut -d: -f6)
+fi
+if [ -f "$SETUP_HOME/.ssh/authorized_keys" ]; then
+    mkdir -p /home/worker/.ssh
+    cp "$SETUP_HOME/.ssh/authorized_keys" /home/worker/.ssh/authorized_keys
+    chown -R worker:worker /home/worker/.ssh
+    chmod 700 /home/worker/.ssh
+    chmod 600 /home/worker/.ssh/authorized_keys
+    log_success "SSH keys copied to worker user"
+else
+    log_info "No SSH authorized_keys found for '$SETUP_USER' — configure manually"
+fi
 
 # ---- System ----
 

@@ -122,26 +122,32 @@ worker_rm() {
 worker_setup() {
     local HOST=""
     local NAME=""
+    local PASSWORD=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             --name) NAME="$2"; shift 2 ;;
+            --password) PASSWORD="$2"; shift 2 ;;
             --help|-h)
                 cat <<EOF
-Usage: hive worker setup <host> --name <name>
+Usage: hive worker setup <host> --name <name> [--password <password>]
 
 Set up a remote machine as a hive worker via SSH.
 
 Arguments:
-  host    SSH host (IP address, hostname, or user@host)
-  --name  Tailscale machine name for this worker
+  host        SSH host (IP address, hostname, or user@host)
+  --name      Tailscale machine name for this worker (also sets hostname)
+  --password  Password for the 'worker' user (default: no password, SSH key only)
 
 This will:
   1. Install git on the remote machine
   2. Send the agent-setup repo via git bundle
   3. Run the full worker installation (AI tools, desktop, etc.)
+     - Sets hostname to the given name
+     - Creates a 'worker' sudo user (NOPASSWD)
+     - Copies SSH keys to the worker user
   4. Copy Telegram config from this manager
-  5. Register the worker
+  5. Register the worker (SSH via worker@<name>)
   6. Open an interactive SSH session for final config (tailscale up)
 EOF
                 exit 0
@@ -158,7 +164,7 @@ EOF
 
     if [ -z "$HOST" ] || [ -z "$NAME" ]; then
         echo -e "${RED}[ERROR]${NC} Both host and --name are required"
-        echo "Usage: hive worker setup <host> --name <name>"
+        echo "Usage: hive worker setup <host> --name <name> [--password <password>]"
         exit 1
     fi
 
@@ -171,8 +177,15 @@ EOF
     echo -e "${NC}"
     echo "  Host:      $HOST"
     echo "  Name:      $NAME"
+    echo "  Hostname:  will be set to '$NAME'"
+    echo "  User:      'worker' (sudo, NOPASSWD)"
+    if [ -n "$PASSWORD" ]; then
+        echo "  Password:  (custom)"
+    else
+        echo "  Password:  (none, SSH key only)"
+    fi
     echo ""
-    echo -e "${YELLOW}[IMPORTANT]${NC} Make sure '${NAME}' will be this machine's"
+    echo -e "${YELLOW}[IMPORTANT]${NC} Use '${NAME}' as this machine's"
     echo "Tailscale name when you run 'tailscale up' later."
     echo ""
     read -p "Continue? (y/N): " confirm
@@ -206,7 +219,11 @@ EOF
     ssh "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
 
     echo -e "${BLUE}[3/6]${NC} Running worker installation (interactive)..."
-    ssh -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh"
+    INSTALL_ARGS="--name '$NAME'"
+    if [ -n "$PASSWORD" ]; then
+        INSTALL_ARGS="$INSTALL_ARGS --password '$PASSWORD'"
+    fi
+    ssh -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh $INSTALL_ARGS"
 
     echo -e "${BLUE}[4/6]${NC} Copying Telegram config..."
     TG_CONFIG="$HIVE_DIR/telegram_config.json"
@@ -219,7 +236,7 @@ EOF
     fi
 
     echo -e "${BLUE}[5/6]${NC} Registering worker..."
-    worker_add "$NAME" --host "$HOST"
+    worker_add "$NAME" --host "worker@$NAME"
 
     echo -e "${BLUE}[6/6]${NC} Setup complete!"
     echo ""
@@ -229,11 +246,13 @@ EOF
     echo -e "${NC}"
     echo "Opening SSH session for final configuration."
     echo "You should run:"
-    echo "  sudo tailscale up    # Connect to tailnet as '$NAME'"
-    echo "  exit                 # When done"
+    echo "  sudo tailscale up --hostname=$NAME    # Connect to tailnet"
+    echo "  exit                                  # When done"
     echo ""
-    echo -e "${BLUE}Connecting...${NC}"
-    ssh -t "$HOST" || true
+    echo -e "${BLUE}Connecting as worker@...${NC}"
+    # SSH as worker user to the original host to run tailscale up
+    BARE_HOST="${HOST#*@}"
+    ssh -t "worker@$BARE_HOST" || true
 }
 
 # ---- Route subcommand ----
@@ -251,7 +270,10 @@ case "$SUBCMD" in
             echo -e "${RED}Usage: hive worker ssh <name>${NC}"
             exit 1
         fi
-        exec ssh -t "$WORKER"
+        ensure_workers_file
+        SSH_TARGET=$(jq -r --arg name "$WORKER" '.workers[$name].host // empty' "$WORKERS_FILE" 2>/dev/null)
+        SSH_TARGET="${SSH_TARGET:-$WORKER}"
+        exec ssh -t "$SSH_TARGET"
         ;;
     --help|-h|help)
         echo "Usage: hive worker <command>"
