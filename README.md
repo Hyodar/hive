@@ -14,6 +14,20 @@ sudo tailscale up        # Connect to tailnet
 
 ### 2. Provision a worker
 
+**Option A: Deploy to a cloud provider**
+
+```bash
+hive worker deploy --at hetzner --name agent-vm-1
+```
+
+This orders a dedicated server via the Hetzner Robot API, waits for provisioning, then runs the full worker setup automatically. Credentials are prompted each time. If provisioning takes a while, Ctrl+C and resume later:
+
+```bash
+hive worker deploy --continue agent-vm-1
+```
+
+**Option B: Set up an existing machine**
+
 ```bash
 hive worker setup root@192.168.1.100 --name agent-vm-1
 ```
@@ -56,6 +70,8 @@ ralph2 --tool <claude|codex|amp> <iterations>
 
 | Command | Description |
 |---------|-------------|
+| `hive worker deploy --at <cloud> --name <name>` | Deploy a worker to a cloud provider |
+| `hive worker deploy --continue <name>` | Resume a cloud deployment |
 | `hive worker setup <host> --name <name>` | Full remote setup via SSH |
 | `hive worker add <name> [--host <host>]` | Register an existing worker |
 | `hive worker ls` | List all registered workers |
@@ -91,9 +107,31 @@ All state lives in `/etc/hive/` on the manager:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Manager role config |
+| `config.json` | Manager config (role, cloud defaults) |
 | `workers.json` | Registered workers |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
+| `deployments/<name>.json` | Cloud deployment state (for `--continue`) |
+
+### Cloud Defaults
+
+Cloud provider defaults are stored in `config.json` and can be overridden per-deploy with `--product` and `--location`:
+
+```json
+{
+    "clouds": {
+        "hetzner": {
+            "default_product": "AX41-NVMe",
+            "default_location": "FSN1"
+        }
+    }
+}
+```
+
+### Supported Cloud Providers
+
+| Provider | API | Auth | Default Product |
+|----------|-----|------|-----------------|
+| Hetzner | Robot API (dedicated servers) | Username + password (prompted) | AX41-NVMe |
 
 ## 📋 Requirements
 
