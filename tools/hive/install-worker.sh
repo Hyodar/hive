@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CONFIG_DIR="/etc/agent-setup"
+CONFIG_DIR="/etc/hive"
 BIN_DIR="/usr/local/bin"
 
 # Colors
@@ -147,7 +147,7 @@ mkdir -p "$CONFIG_DIR/ralph2/skills/ralph"
 
 # Install hive (needed for repo receive)
 cp -r "$SCRIPT_DIR/tools/hive" "$CONFIG_DIR/tools/"
-cp -r "$SCRIPT_DIR/tools/repo-transfer" "$CONFIG_DIR/tools/"
+cp -r "$SCRIPT_DIR/tools/repo" "$CONFIG_DIR/tools/"
 cp "$SCRIPT_DIR/hive" "$BIN_DIR/hive"
 chmod +x "$BIN_DIR/hive"
 

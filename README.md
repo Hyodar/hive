@@ -1,28 +1,15 @@
-# 🐝 Hive
+# Hive
 
-Orchestrate a swarm of AI coding agents across multiple machines. One **manager** controls everything, **workers** run the agents.
+Manage a swarm of AI coding agents across multiple machines.
 
-```
-Manager                            Workers
-┌────────────────────┐      ┌────────────────────┐
-│  hive init         │      │  ralph2            │
-│  hive worker *     │ SSH  │  alertme / promptme│
-│  hive repo send    │─────▶│  xclaude / xcodex  │
-│  hive repo fetch   │◀─────│  NoMachine + VSCode│
-│  🤖 Telegram bot   │      │  Cinnamon desktop  │
-└────────────────────┘      └────────────────────┘
-         │      Tailscale VPN       │
-         └──────────────────────────┘
-```
-
-## 🚀 Getting Started
+## Quick Start
 
 ### 1. Initialize the manager
 
 ```bash
 git clone <repo-url> && cd agent-setup
 sudo ./hive init         # Installs hive, configures Telegram bot + worker registry
-sudo tailscale up        # Connect to your tailnet
+sudo tailscale up        # Connect to tailnet
 ```
 
 ### 2. Provision a worker
@@ -42,9 +29,7 @@ hive repo send agent-vm-1 main     # Push repo to worker
 hive repo fetch agent-vm-1 main    # Pull results back
 ```
 
----
-
-## 📖 Hive CLI
+## Hive CLI
 
 ### Setup
 
@@ -60,6 +45,7 @@ hive repo fetch agent-vm-1 main    # Pull results back
 | `hive worker add <name> [--host <host>]` | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
+| `hive worker ssh <name>` | SSH into a worker |
 
 ### Repo Transfer
 
@@ -67,10 +53,9 @@ hive repo fetch agent-vm-1 main    # Pull results back
 |---------|-------------|
 | `hive repo send <worker> [branch]` | Send current repo to a worker via git bundle |
 | `hive repo fetch <worker> [branch]` | Fetch repo back from a worker |
+| `hive repo ssh <worker>` | SSH into worker at the repo directory |
 
----
-
-## 🔧 Worker Tools
+## Worker Tools
 
 Installed as standalone commands on each worker by `hive worker setup`.
 
@@ -85,9 +70,7 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
 
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 agent-setup/
@@ -99,12 +82,12 @@ agent-setup/
     │   └── install-worker.sh     # Runs on worker during setup
     ├── ralph2/                   # Agent loop + PRD skills
     ├── telegram-bot/             # Bot service + alertme/promptme
-    └── repo-transfer/            # Git bundle send/fetch/receive
+    └── repo/                     # Git bundle send/fetch/receive
 ```
 
-## ⚙️ Configuration
+## Configuration
 
-All state lives in `/etc/agent-setup/` on the manager:
+All state lives in `/etc/hive/` on the manager:
 
 | File | Purpose |
 |------|---------|
@@ -112,7 +95,7 @@ All state lives in `/etc/agent-setup/` on the manager:
 | `workers.json` | Registered workers |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
 
-## 📋 Requirements
+## Requirements
 
 - Ubuntu/Debian-based Linux
 - Tailscale account (networking between machines)

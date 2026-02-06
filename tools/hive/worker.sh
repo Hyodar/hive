@@ -4,7 +4,7 @@
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/agent-setup}"
+HIVE_DIR="${HIVE_DIR:-/etc/hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # Colors
@@ -211,7 +211,7 @@ EOF
     echo -e "${BLUE}[4/6]${NC} Copying Telegram config..."
     TG_CONFIG="$HIVE_DIR/telegram_config.json"
     if [ -f "$TG_CONFIG" ]; then
-        scp -q "$TG_CONFIG" "$HOST:/etc/agent-setup/telegram_config.json"
+        scp -q "$TG_CONFIG" "$HOST:/etc/hive/telegram_config.json"
         ssh "$HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
         echo -e "${GREEN}[OK]${NC} Telegram config copied"
     else
@@ -245,6 +245,14 @@ case "$SUBCMD" in
     add)     worker_add "$@" ;;
     ls|list) worker_ls "$@" ;;
     rm|remove) worker_rm "$@" ;;
+    ssh)
+        WORKER="${1:-}"
+        if [ -z "$WORKER" ]; then
+            echo -e "${RED}Usage: hive worker ssh <name>${NC}"
+            exit 1
+        fi
+        exec ssh -t "$WORKER"
+        ;;
     --help|-h|help)
         echo "Usage: hive worker <command>"
         echo ""
@@ -253,6 +261,7 @@ case "$SUBCMD" in
         echo "  add <name> [--host <host>]   Register a worker without setup"
         echo "  ls                           List registered workers"
         echo "  rm <name>                    Remove a worker from registry"
+        echo "  ssh <name>                   SSH into a worker"
         ;;
     *)
         echo -e "${RED}Unknown worker command: ${SUBCMD:-<none>}${NC}"

@@ -4,7 +4,7 @@
 
 set -e
 
-HIVE_DIR="/etc/agent-setup"
+HIVE_DIR="/etc/hive"
 
 # Resolve HIVE_TOOLS: installed location > .source_repo > repo-local
 if [ -d "$HIVE_DIR/tools" ]; then
@@ -37,10 +37,12 @@ show_help() {
     echo "  worker add <name> [--host <host>] Register a worker without setup"
     echo "  worker ls                         List registered workers"
     echo "  worker rm <name>                  Remove a worker from registry"
+    echo "  worker ssh <name>                 SSH into a worker"
     echo ""
     echo -e "${BLUE}Repo transfer:${NC}"
     echo "  repo send <worker> [branch]       Send current repo to a worker"
     echo "  repo fetch <worker> [branch]      Fetch a repo from a worker"
+    echo "  repo ssh <worker>                 SSH into worker at the repo directory"
     echo ""
     echo -e "${BLUE}General:${NC}"
     echo "  help                              Show this help"
@@ -61,11 +63,34 @@ case "$CMD" in
         SUBCMD="${1:-}"
         shift 2>/dev/null || true
         case "$SUBCMD" in
-            send)    exec bash "$HIVE_TOOLS/repo-transfer/repo-send" "$@" ;;
-            fetch)   exec bash "$HIVE_TOOLS/repo-transfer/repo-fetch" "$@" ;;
-            receive) exec bash "$HIVE_TOOLS/repo-transfer/repo-receive" "$@" ;;
+            send)    exec bash "$HIVE_TOOLS/repo/repo-send" "$@" ;;
+            fetch)   exec bash "$HIVE_TOOLS/repo/repo-fetch" "$@" ;;
+            receive) exec bash "$HIVE_TOOLS/repo/repo-receive" "$@" ;;
+            ssh)
+                WORKER="${1:-}"
+                if [ -z "$WORKER" ]; then
+                    echo -e "${RED}Usage: hive repo ssh <worker>${NC}"
+                    exit 1
+                fi
+                REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+                    echo -e "${RED}Error: not in a git repository${NC}"; exit 1
+                }
+                REPO_NAME=$(basename "$REPO_ROOT")
+                REMOTE_BASE=$(ssh "$WORKER" bash -c "'
+                    BP=\$HOME
+                    CFG=\$HOME/.repo-transfer/config
+                    if [ -f \"\$CFG\" ]; then
+                        while IFS=\"=\" read -r k v; do
+                            case \"\$k\" in base_path) v=\$(echo \"\$v\" | xargs); BP=\"\${v/#\\~/\$HOME}\" ;; esac
+                        done < \"\$CFG\"
+                    fi
+                    echo \"\$BP\"
+                '") || REMOTE_BASE="~"
+                echo -e "${BLUE}Connecting to $WORKER:$REMOTE_BASE/$REPO_NAME...${NC}"
+                exec ssh -t "$WORKER" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
+                ;;
             *)
-                echo "Usage: hive repo <send|fetch|receive>"
+                echo "Usage: hive repo <send|fetch|ssh>"
                 exit 1
                 ;;
         esac

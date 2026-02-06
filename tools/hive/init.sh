@@ -4,7 +4,7 @@
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/agent-setup}"
+HIVE_DIR="${HIVE_DIR:-/etc/hive}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="/usr/local/bin"
 CONFIG_FILE="$HIVE_DIR/config.json"

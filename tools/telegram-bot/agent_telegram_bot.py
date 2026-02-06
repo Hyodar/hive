@@ -19,7 +19,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Configuration
-CONFIG_DIR = Path("/etc/agent-setup")
+CONFIG_DIR = Path("/etc/hive")
 CONFIG_FILE = CONFIG_DIR / "telegram_config.json"
 SOCKET_PATH = "/tmp/agent_telegram_bot.sock"
 PENDING_DIR = CONFIG_DIR / "pending_prompts"

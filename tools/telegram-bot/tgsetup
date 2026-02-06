@@ -4,7 +4,7 @@
 
 set -e
 
-CONFIG_DIR="/etc/agent-setup"
+CONFIG_DIR="/etc/hive"
 CONFIG_FILE="$CONFIG_DIR/telegram_config.json"
 
 # Colors
@@ -24,7 +24,7 @@ echo -e "${NC}"
 # Check if running as root for system config
 if [ "$EUID" -ne 0 ]; then
     echo -e "${YELLOW}[WARN]${NC} Running without root. Config will be saved to user directory."
-    CONFIG_DIR="$HOME/.config/agent-setup"
+    CONFIG_DIR="$HOME/.config/hive"
     CONFIG_FILE="$CONFIG_DIR/telegram_config.json"
 fi
 
