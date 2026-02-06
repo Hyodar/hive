@@ -2,9 +2,11 @@
 # repo-fetch - Fetch a git branch from a remote machine using git bundles over SSH
 #
 # Usage: repo-fetch [options] <host> [branch]
-#   -p, --path <path>   Remote repo path (default: ~/repos/<repo-name>)
+#   -p, --path <path>   Remote repo path (overrides remote config)
 #   -f, --full           Force full bundle (skip incremental)
 #   -h, --help           Show help
+#
+# Config: ~/.repo-transfer/config on the REMOTE machine controls the default base_path.
 
 set -euo pipefail
 
@@ -21,12 +23,15 @@ Usage: repo-fetch [options] <host> [branch]
 Fetch a git branch from a remote machine via git bundle over SSH.
 The remote creates a bundle and sends it back for local application.
 
+The remote machine's ~/.repo-transfer/config controls where repos
+live (base_path setting, defaults to ~).
+
 Arguments:
   host      Remote hostname (Tailscale name, IP, or user@host)
   branch    Branch to fetch (default: current branch)
 
 Options:
-  -p, --path <path>   Remote repo path (default: ~/repos/<repo-name>)
+  -p, --path <path>   Remote repo path (overrides remote config)
   -f, --full           Force full bundle (no incremental optimization)
   -h, --help           Show this help message
 
@@ -85,8 +90,24 @@ if [ -z "$BRANCH" ]; then
     fi
 fi
 
-# Default remote path
-[ -z "$REMOTE_PATH" ] && REMOTE_PATH="~/repos/$REPO_NAME"
+# Resolve remote path: use -p if given, otherwise read remote config
+if [ -z "$REMOTE_PATH" ]; then
+    echo -e "${BLUE}Resolving remote repo path...${NC}"
+    REMOTE_BASE=$(ssh "$HOST" bash -c "'
+        BP=\$HOME
+        CFG=\$HOME/.repo-transfer/config
+        if [ -f \"\$CFG\" ]; then
+            while IFS=\"=\" read -r k v; do
+                case \"\$k\" in base_path) v=\$(echo \"\$v\" | xargs); BP=\"\${v/#\\~/\$HOME}\" ;; esac
+            done < \"\$CFG\"
+        fi
+        echo \"\$BP\"
+    '") || {
+        echo -e "${YELLOW}Warning: could not read remote config, assuming ~${NC}"
+        REMOTE_BASE="~"
+    }
+    REMOTE_PATH="$REMOTE_BASE/$REPO_NAME"
+fi
 
 # Determine local basis for incremental fetch
 LOCAL_TIP=""

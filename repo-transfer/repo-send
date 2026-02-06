@@ -2,9 +2,11 @@
 # repo-send - Send a git branch to a remote machine using git bundles over SSH
 #
 # Usage: repo-send [options] <host> [branch]
-#   -p, --path <path>   Remote repo path (default: ~/repos/<repo-name>)
+#   -p, --path <path>   Remote repo path (default: remote's base_path/<repo-name>)
 #   -f, --full           Force full bundle (skip incremental)
 #   -h, --help           Show help
+#
+# Config: ~/.repo-transfer/config on the REMOTE machine controls the default base_path.
 
 set -euo pipefail
 
@@ -21,12 +23,15 @@ Usage: repo-send [options] <host> [branch]
 Send a git branch to a remote machine via git bundle over SSH.
 Automatically uses incremental bundles when possible.
 
+The remote machine's ~/.repo-transfer/config controls the default
+destination (base_path setting, defaults to ~).
+
 Arguments:
   host      Remote hostname (Tailscale name, IP, or user@host)
   branch    Branch to send (default: current branch)
 
 Options:
-  -p, --path <path>   Remote repo path (default: ~/repos/<repo-name>)
+  -p, --path <path>   Remote repo path (overrides remote config)
   -f, --full           Force full bundle (no incremental optimization)
   -h, --help           Show this help message
 
@@ -91,12 +96,9 @@ git rev-parse --verify "$BRANCH" >/dev/null 2>&1 || {
     exit 1
 }
 
-# Default remote path
-[ -z "$REMOTE_PATH" ] && REMOTE_PATH="~/repos/$REPO_NAME"
-
 # State tracking for incremental bundles
 STATE_DIR="$HOME/.repo-transfer"
-STATE_KEY=$(echo "${REPO_NAME}:${HOST}:${REMOTE_PATH}:${BRANCH}" | md5sum | cut -d' ' -f1)
+STATE_KEY=$(echo "${REPO_NAME}:${HOST}:${BRANCH}" | md5sum | cut -d' ' -f1)
 STATE_FILE="$STATE_DIR/send/$STATE_KEY"
 
 BRANCH_TIP=$(git rev-parse "$BRANCH")
@@ -132,12 +134,17 @@ REMOTE_BUNDLE="/tmp/${REPO_NAME}-$(date +%s).bundle"
 echo -e "${BLUE}Transferring to $HOST...${NC}"
 scp -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 
-# Apply on remote
+# Apply on remote (let remote's config decide path unless -p was given)
 echo -e "${BLUE}Applying on remote...${NC}"
-ssh "$HOST" "repo-receive '$REMOTE_BUNDLE' '$BRANCH' --path '$REMOTE_PATH'; rm -f '$REMOTE_BUNDLE'"
+RECEIVE_CMD="repo-receive '$REMOTE_BUNDLE' '$BRANCH'"
+if [ -n "$REMOTE_PATH" ]; then
+    RECEIVE_CMD="$RECEIVE_CMD --path '$REMOTE_PATH'"
+fi
+ssh "$HOST" "$RECEIVE_CMD; rm -f '$REMOTE_BUNDLE'"
 
 # Record state for future incremental sends
 mkdir -p "$(dirname "$STATE_FILE")"
 echo "$BRANCH_TIP" > "$STATE_FILE"
 
-echo -e "${GREEN}Sent '$BRANCH' ($BRANCH_TIP) to $HOST:$REMOTE_PATH${NC}"
+DISPLAY_PATH="${REMOTE_PATH:-"<default>/$REPO_NAME"}"
+echo -e "${GREEN}Sent '$BRANCH' ($BRANCH_TIP) to $HOST:$DISPLAY_PATH${NC}"
