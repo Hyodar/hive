@@ -1,18 +1,26 @@
 #!/bin/bash
-# hive - Central CLI for agent-setup
-# Manages agent workers, tools, and repo transfers
+# hive - Agent swarm manager
+# Manages workers, repo transfers, and Telegram notifications
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/agent-setup}"
-HIVE_TOOLS="$HIVE_DIR/tools"
+# Resolve HIVE_TOOLS: installed location or repo-local
+if [ -d "/etc/agent-setup/tools" ]; then
+    HIVE_DIR="/etc/agent-setup"
+    HIVE_TOOLS="$HIVE_DIR/tools"
+else
+    # Running from repo checkout directly
+    HIVE_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools"
+    HIVE_DIR="/etc/agent-setup"
+fi
+
+export HIVE_DIR HIVE_TOOLS
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 show_help() {
@@ -20,8 +28,10 @@ show_help() {
     echo ""
     echo "Usage: hive <command> [options]"
     echo ""
-    echo -e "${BLUE}Manager commands:${NC}"
+    echo -e "${BLUE}Setup:${NC}"
     echo "  init                              Initialize this machine as a hive manager"
+    echo ""
+    echo -e "${BLUE}Workers:${NC}"
     echo "  worker setup <host> --name <name> Set up a remote worker via SSH"
     echo "  worker add <name> [--host <host>] Register a worker without setup"
     echo "  worker ls                         List registered workers"
@@ -30,13 +40,6 @@ show_help() {
     echo -e "${BLUE}Repo transfer:${NC}"
     echo "  repo send <worker> [branch]       Send current repo to a worker"
     echo "  repo fetch <worker> [branch]      Fetch a repo from a worker"
-    echo ""
-    echo -e "${BLUE}Agent tools:${NC}"
-    echo "  ralph2 [args]                     Run ralph2 agent loop"
-    echo "  ralphsetup [args]                 Initialize ralph2 in a project"
-    echo "  alertme [args]                    Send Telegram alert notification"
-    echo "  promptme [args]                   Send Telegram prompt and wait for reply"
-    echo "  tgsetup                           Configure Telegram bot"
     echo ""
     echo -e "${BLUE}General:${NC}"
     echo "  help                              Show this help"
@@ -65,21 +68,6 @@ case "$CMD" in
                 exit 1
                 ;;
         esac
-        ;;
-    ralph2)
-        exec bash "$HIVE_TOOLS/ralph2/ralph2.sh" "$@"
-        ;;
-    ralphsetup)
-        exec bash "$HIVE_TOOLS/ralph2/ralphsetup" "$@"
-        ;;
-    alertme)
-        exec bash "$HIVE_TOOLS/telegram-bot/alertme" "$@"
-        ;;
-    promptme)
-        exec bash "$HIVE_TOOLS/telegram-bot/promptme" "$@"
-        ;;
-    tgsetup)
-        exec bash "$HIVE_TOOLS/telegram-bot/tgsetup" "$@"
         ;;
     help|--help|-h)
         show_help

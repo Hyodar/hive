@@ -1,10 +1,12 @@
 #!/bin/bash
 # hive init - Initialize this machine as a hive manager
-# Sets up telegram bot, config directory, and worker registry
+# Sets up Telegram bot, worker registry, and installs hive to PATH
 
 set -e
 
 HIVE_DIR="${HIVE_DIR:-/etc/agent-setup}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN_DIR="/usr/local/bin"
 CONFIG_FILE="$HIVE_DIR/config.json"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 
@@ -22,17 +24,35 @@ echo "  Hive Manager Initialization"
 echo "========================================"
 echo -e "${NC}"
 
-# Check root for system config
 if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} Please run as root (use sudo)"
     exit 1
 fi
 
-# Create directory structure
-mkdir -p "$HIVE_DIR"
+# ---- Install hive + tools ----
+
+echo -e "${BLUE}[1/4]${NC} Installing hive..."
+mkdir -p "$HIVE_DIR/tools"
 mkdir -p "$HIVE_DIR/pending_prompts"
 
-# Initialize manager config
+# Copy tools to system location
+cp -r "$SCRIPT_DIR/tools/hive" "$HIVE_DIR/tools/"
+cp -r "$SCRIPT_DIR/tools/telegram-bot" "$HIVE_DIR/tools/"
+cp -r "$SCRIPT_DIR/tools/repo-transfer" "$HIVE_DIR/tools/"
+
+# Install hive binary
+cp "$SCRIPT_DIR/hive" "$BIN_DIR/hive"
+chmod +x "$BIN_DIR/hive"
+
+# Record source repo for worker setup
+echo "$SCRIPT_DIR" > "$HIVE_DIR/.source_repo"
+
+echo -e "${GREEN}[OK]${NC} hive installed to $BIN_DIR/hive"
+
+# ---- Config + registry ----
+
+echo -e "${BLUE}[2/4]${NC} Setting up config..."
+
 if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" << 'EOF'
 {
@@ -45,7 +65,6 @@ else
     echo -e "${YELLOW}[SKIP]${NC} Config already exists"
 fi
 
-# Initialize workers registry
 if [ ! -f "$WORKERS_FILE" ]; then
     echo '{"workers":{}}' | jq '.' > "$WORKERS_FILE"
     echo -e "${GREEN}[OK]${NC} Workers registry created"
@@ -54,13 +73,46 @@ else
     echo -e "${YELLOW}[SKIP]${NC} Workers registry exists ($WORKER_COUNT workers)"
 fi
 
-# Set up telegram bot
+# ---- Telegram bot ----
+
+echo -e "${BLUE}[3/4]${NC} Setting up Telegram bot..."
+
+# Copy bot script
+cp "$SCRIPT_DIR/tools/telegram-bot/agent_telegram_bot.py" "$HIVE_DIR/"
+
+# Create default config if not exists
+if [ ! -f "$HIVE_DIR/telegram_config.json" ]; then
+    cat > "$HIVE_DIR/telegram_config.json" << 'EOF'
+{
+    "bot_token": "",
+    "chat_id": "",
+    "binding_phrase": "BIND_AGENT_BOT",
+    "bound": false
+}
+EOF
+fi
+
+# Create venv + install deps
+if [ ! -d "$HIVE_DIR/venv" ]; then
+    python3 -m venv "$HIVE_DIR/venv"
+    "$HIVE_DIR/venv/bin/pip" install -q python-telegram-bot aiofiles
+    echo -e "${GREEN}[OK]${NC} Python venv created"
+else
+    echo -e "${YELLOW}[SKIP]${NC} Python venv exists"
+fi
+
+# Install systemd service
+cp "$SCRIPT_DIR/tools/telegram-bot/agent-telegram-bot.service" /etc/systemd/system/
+systemctl daemon-reload
+
 echo ""
-echo -e "${BLUE}Setting up Telegram bot...${NC}"
-echo "The bot will be shared with all workers for notifications."
+echo "The Telegram bot will be shared with all workers for notifications."
 echo ""
 bash "$HIVE_DIR/tools/telegram-bot/tgsetup"
 
+# ---- Done ----
+
+echo -e "${BLUE}[4/4]${NC} Done!"
 echo ""
 echo -e "${CYAN}"
 echo "========================================"
@@ -70,6 +122,6 @@ echo -e "${NC}"
 echo ""
 echo "Next steps:"
 echo "  hive worker setup <host> --name <name>  # Set up a worker"
-echo "  hive worker add <name>                  # Register an existing worker"
 echo "  hive worker ls                          # List workers"
+echo "  hive repo send <worker> [branch]        # Send repo to worker"
 echo ""

@@ -56,16 +56,13 @@ worker_add() {
 
     ensure_workers_file
 
-    # Default host to name (Tailscale DNS)
     HOST="${HOST:-$NAME}"
 
-    # Check if already registered
     if jq -e ".workers[\"$NAME\"]" "$WORKERS_FILE" >/dev/null 2>&1; then
         echo -e "${YELLOW}[WARN]${NC} Worker '$NAME' is already registered"
         return 0
     fi
 
-    # Register
     local ADDED=$(date -Iseconds)
     jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" \
         '.workers[$name] = {"host": $host, "name": $name, "added": $added}' \
@@ -141,11 +138,11 @@ Arguments:
 
 This will:
   1. Install git on the remote machine
-  2. Send the agent-setup repo via bundle
-  3. Run the agent setup script
-  4. Copy Telegram config from manager
+  2. Send the agent-setup repo via git bundle
+  3. Run the full worker installation (AI tools, desktop, etc.)
+  4. Copy Telegram config from this manager
   5. Register the worker
-  6. Open an interactive SSH session for final config
+  6. Open an interactive SSH session for final config (tailscale up)
 EOF
                 exit 0
                 ;;
@@ -184,15 +181,14 @@ EOF
         exit 0
     fi
 
-    # Find the agent-setup repo root (where hive was installed from)
+    # Find the agent-setup repo
     REPO_DIR=""
-    # Check if we have a source marker
     if [ -f "$HIVE_DIR/.source_repo" ]; then
         REPO_DIR=$(cat "$HIVE_DIR/.source_repo")
     fi
     if [ -z "$REPO_DIR" ] || [ ! -d "$REPO_DIR/.git" ]; then
-        echo -e "${RED}[ERROR]${NC} Cannot find agent-setup repo source."
-        echo "Make sure .source_repo is set in $HIVE_DIR/"
+        echo -e "${RED}[ERROR]${NC} Cannot find agent-setup repo."
+        echo "Run 'hive init' first."
         exit 1
     fi
 
@@ -209,18 +205,17 @@ EOF
     scp -q "$BUNDLE_FILE" "$HOST:/tmp/agent-setup.bundle"
     ssh "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
 
-    echo -e "${BLUE}[3/6]${NC} Running agent setup (interactive)..."
-    ssh -t "$HOST" "cd ~/agent-setup && sudo ./setup-agent.sh"
+    echo -e "${BLUE}[3/6]${NC} Running worker installation (interactive)..."
+    ssh -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh"
 
     echo -e "${BLUE}[4/6]${NC} Copying Telegram config..."
     TG_CONFIG="$HIVE_DIR/telegram_config.json"
     if [ -f "$TG_CONFIG" ]; then
         scp -q "$TG_CONFIG" "$HOST:/etc/agent-setup/telegram_config.json"
-        # Restart telegram bot on worker to pick up config
         ssh "$HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
         echo -e "${GREEN}[OK]${NC} Telegram config copied"
     else
-        echo -e "${YELLOW}[WARN]${NC} No Telegram config found. Run 'hive init' on manager first."
+        echo -e "${YELLOW}[WARN]${NC} No Telegram config found. Run 'hive init' first."
     fi
 
     echo -e "${BLUE}[5/6]${NC} Registering worker..."
@@ -246,8 +241,8 @@ SUBCMD="${1:-}"
 shift 2>/dev/null || true
 
 case "$SUBCMD" in
-    setup)  worker_setup "$@" ;;
-    add)    worker_add "$@" ;;
+    setup)   worker_setup "$@" ;;
+    add)     worker_add "$@" ;;
     ls|list) worker_ls "$@" ;;
     rm|remove) worker_rm "$@" ;;
     --help|-h|help)
