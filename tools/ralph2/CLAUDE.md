@@ -1,4 +1,4 @@
-# Ralph2 Agent Instructions (Amp)
+# Ralph2 Agent Instructions (Claude Code)
 
 You are an autonomous coding agent working on a software project.
 
@@ -8,9 +8,10 @@ You are an autonomous coding agent working on a software project.
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
+5. **Send a start alert using `alertme`** (see Notifications section)
+6. Implement that single user story
 6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update AGENTS.md files if you discover reusable patterns (see below)
+7. Update CLAUDE.md files if you discover reusable patterns (see below)
 8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
 9. Update the PRD to set `passes: true` for the completed story
 10. Append your progress to `progress.txt`
@@ -30,7 +31,7 @@ jq '[.userStories[] | select(.passes == false)] | length' prd.json
 # List all tasks with status
 jq -r '.userStories[] | "\(if .passes then "DONE" else "TODO" end) [\(.priority)] \(.id): \(.title)"' prd.json
 
-# Mark task as complete
+# Mark task as complete (replace TASK_ID with actual ID)
 jq '(.userStories[] | select(.id == "TASK_ID")).passes = true' prd.json > prd.json.tmp && mv prd.json.tmp prd.json
 ```
 
@@ -39,7 +40,6 @@ jq '(.userStories[] | select(.id == "TASK_ID")).passes = true' prd.json > prd.js
 APPEND to progress.txt (never replace, always append):
 ```
 ## [Date/Time] - [Story ID]
-Thread: https://ampcode.com/threads/$AMP_CURRENT_THREAD_ID
 - What was implemented
 - Files changed
 - **Learnings for future iterations:**
@@ -48,8 +48,6 @@ Thread: https://ampcode.com/threads/$AMP_CURRENT_THREAD_ID
   - Useful context (e.g., "the evaluation panel is in component X")
 ---
 ```
-
-Include the thread URL so future iterations can use the `read_thread` tool to reference previous work if needed.
 
 The learnings section is critical - it helps future iterations avoid repeating mistakes and understand the codebase better.
 
@@ -66,12 +64,12 @@ If you discover a **reusable pattern** that future iterations should know, add i
 
 Only add patterns that are **general and reusable**, not story-specific details.
 
-## Update AGENTS.md Files
+## Update CLAUDE.md Files
 
-Before committing, check if any edited files have learnings worth preserving in nearby AGENTS.md files:
+Before committing, check if any edited files have learnings worth preserving in nearby CLAUDE.md files:
 
 1. **Identify directories with edited files** - Look at which directories you modified
-2. **Check for existing AGENTS.md** - Look for AGENTS.md in those directories or parent directories
+2. **Check for existing CLAUDE.md** - Look for CLAUDE.md in those directories or parent directories
 3. **Add valuable learnings** - If you discovered something future developers/agents should know:
    - API patterns or conventions specific to that module
    - Gotchas or non-obvious requirements
@@ -79,18 +77,12 @@ Before committing, check if any edited files have learnings worth preserving in 
    - Testing approaches for that area
    - Configuration or environment requirements
 
-**Examples of good AGENTS.md additions:**
-- "When modifying X, also update Y to keep them in sync"
-- "This module uses pattern Z for all API calls"
-- "Tests require the dev server running on PORT 3000"
-- "Field names must match the template exactly"
-
 **Do NOT add:**
 - Story-specific implementation details
 - Temporary debugging notes
 - Information already in progress.txt
 
-Only update AGENTS.md if you have **genuinely reusable knowledge** that would help future work in that directory.
+Only update CLAUDE.md if you have **genuinely reusable knowledge** that would help future work in that directory.
 
 ## Quality Requirements
 
@@ -103,16 +95,13 @@ Only update AGENTS.md if you have **genuinely reusable knowledge** that would he
 
 **IMPORTANT:** Use `alertme` at the end of each task to notify the user of progress.
 
-### alertme - Send notifications to Telegram
+### alertme - Send notifications
 ```bash
 # On task completion
-alertme --title "Task Complete" --description "US-001: Add priority field to database" --status success
-
-# On warning
-alertme --title "Task Complete" --description "US-002 done but manual verification needed" --status warning
+alertme --title "Task Complete" --description "US-001: Add priority field" --status success
 
 # On error
-alertme --title "Task Failed" --description "Build errors encountered" --codeblock "$(npm run build 2>&1 | tail -20)" --status error
+alertme --title "Task Failed" --description "Build errors in component X" --status error
 
 # Status options: success, info, warning, error
 ```
@@ -120,29 +109,26 @@ alertme --title "Task Failed" --description "Build errors encountered" --codeblo
 ### promptme - Get user input (when truly needed)
 ```bash
 # Ask a question and wait for response
-ANSWER=$(promptme --title "Clarification Needed" --description "The API can return either format A or B. Which should I implement?" --timeout 300)
-echo "User responded: $ANSWER"
-
-# Ask with code context
-ANSWER=$(promptme --title "Design Decision" --description "Should I refactor this component?" --codeblock "$(cat src/component.tsx | head -50)" --timeout 600)
+ANSWER=$(promptme --title "Clarification Needed" --description "Should I use approach A or B?" --timeout 300)
+echo "User said: $ANSWER"
 ```
 
 **Always send an alert when:**
+- You start working on a task
 - A task is completed successfully
 - An error occurs that blocks progress
-- You need clarification on requirements
+- You need to pause for user input
 - The iteration is ending
 
-## Browser Testing (Required for Frontend Stories)
+## Browser Testing (If Available)
 
-For any story that changes UI, you MUST verify it works in the browser:
+For any story that changes UI, verify it works in the browser if you have browser testing tools configured (e.g., via MCP):
 
-1. Load the `dev-browser` skill
-2. Navigate to the relevant page
-3. Verify the UI changes work as expected
-4. Take a screenshot if helpful for the progress log
+1. Navigate to the relevant page
+2. Verify the UI changes work as expected
+3. Take a screenshot if helpful for the progress log
 
-A frontend story is NOT complete until browser verification passes.
+If no browser tools are available, note in your progress report that manual browser verification is needed.
 
 ## Completion
 
@@ -153,10 +139,25 @@ After completing a user story:
 
 **Completion is determined by checking prd.json** - when all stories have `passes: true`, ralph2 will exit successfully.
 
+## Never Commit Ralph2 Files
+
+**NEVER commit any of these files** - they are managed by the ralph2 loop, not by you:
+- `prd.json`
+- `progress.txt`
+- `ralph2.sh`
+- `ralphsetup`
+- `prompt.md` (ralph2 instructions)
+- `CLAUDE.md` (ralph2 instructions in scripts/ralph/)
+- `CODEX.md` (ralph2 instructions in scripts/ralph/)
+- `AGENTS.md` (ralph2 instructions in scripts/ralph/)
+- `prd.json.example`
+
+Always `git reset` these files if they end up staged.
+
 ## Important
 
 - Work on ONE story per iteration
 - Commit frequently
 - Keep CI green
 - Read the Codebase Patterns section in progress.txt before starting
-- **Always use `alertme` to report task completion or errors**
+- **Always use `alertme` to report task start, completion, or errors**

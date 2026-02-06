@@ -8,8 +8,8 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/etc/agent-setup
-ExecStart=/etc/agent-setup/venv/bin/python3 /etc/agent-setup/agent_telegram_bot.py
+WorkingDirectory=/etc/hive
+ExecStart=/etc/hive/venv/bin/python3 /etc/hive/agent_telegram_bot.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -22,7 +22,7 @@ Environment=PYTHONUNBUFFERED=1
 NoNewPrivileges=false
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/etc/agent-setup /tmp
+ReadWritePaths=/etc/hive /tmp
 PrivateTmp=false
 
 [Install]

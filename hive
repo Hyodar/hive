@@ -1,0 +1,109 @@
+#!/bin/bash
+# hive - Agent swarm manager
+# Manages workers, repo transfers, and Telegram notifications
+
+set -e
+
+HIVE_DIR="/etc/hive"
+
+# Resolve HIVE_TOOLS: installed location > .source_repo > repo-local
+if [ -d "$HIVE_DIR/tools" ]; then
+    HIVE_TOOLS="$HIVE_DIR/tools"
+elif [ -f "$HIVE_DIR/.source_repo" ]; then
+    HIVE_TOOLS="$(cat "$HIVE_DIR/.source_repo")/tools"
+else
+    HIVE_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools"
+fi
+
+export HIVE_DIR HIVE_TOOLS
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+show_help() {
+    echo -e "${CYAN}hive${NC} - Agent swarm manager"
+    echo ""
+    echo "Usage: hive <command> [options]"
+    echo ""
+    echo -e "${BLUE}Setup:${NC}"
+    echo "  init                              Initialize this machine as a hive manager"
+    echo ""
+    echo -e "${BLUE}Workers:${NC}"
+    echo "  worker setup <host> --name <name> Set up a remote worker via SSH"
+    echo "  worker add <name> [--host <host>] Register a worker without setup"
+    echo "  worker ls                         List registered workers"
+    echo "  worker rm <name>                  Remove a worker from registry"
+    echo "  worker ssh <name>                 SSH into a worker"
+    echo ""
+    echo -e "${BLUE}Repo transfer:${NC}"
+    echo "  repo send <worker> [branch]       Send current repo to a worker"
+    echo "  repo fetch <worker> [branch]      Fetch a repo from a worker"
+    echo "  repo ssh <worker>                 SSH into worker at the repo directory"
+    echo ""
+    echo -e "${BLUE}General:${NC}"
+    echo "  help                              Show this help"
+    echo "  version                           Show version"
+}
+
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    init)
+        exec bash "$HIVE_TOOLS/hive/init.sh" "$@"
+        ;;
+    worker)
+        exec bash "$HIVE_TOOLS/hive/worker.sh" "$@"
+        ;;
+    repo)
+        SUBCMD="${1:-}"
+        shift 2>/dev/null || true
+        case "$SUBCMD" in
+            send)    exec bash "$HIVE_TOOLS/repo/repo-send" "$@" ;;
+            fetch)   exec bash "$HIVE_TOOLS/repo/repo-fetch" "$@" ;;
+            receive) exec bash "$HIVE_TOOLS/repo/repo-receive" "$@" ;;
+            ssh)
+                WORKER="${1:-}"
+                if [ -z "$WORKER" ]; then
+                    echo -e "${RED}Usage: hive repo ssh <worker>${NC}"
+                    exit 1
+                fi
+                REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+                    echo -e "${RED}Error: not in a git repository${NC}"; exit 1
+                }
+                REPO_NAME=$(basename "$REPO_ROOT")
+                REMOTE_BASE=$(ssh "$WORKER" bash -c "'
+                    BP=\$HOME
+                    CFG=\$HOME/.repo-transfer/config
+                    if [ -f \"\$CFG\" ]; then
+                        while IFS=\"=\" read -r k v; do
+                            case \"\$k\" in base_path) v=\$(echo \"\$v\" | xargs); BP=\"\${v/#\\~/\$HOME}\" ;; esac
+                        done < \"\$CFG\"
+                    fi
+                    echo \"\$BP\"
+                '") || REMOTE_BASE="~"
+                echo -e "${BLUE}Connecting to $WORKER:$REMOTE_BASE/$REPO_NAME...${NC}"
+                exec ssh -t "$WORKER" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
+                ;;
+            *)
+                echo "Usage: hive repo <send|fetch|ssh>"
+                exit 1
+                ;;
+        esac
+        ;;
+    help|--help|-h)
+        show_help
+        ;;
+    version|--version|-v)
+        echo "hive v1.0.0"
+        ;;
+    *)
+        echo -e "${RED}Unknown command: $CMD${NC}"
+        echo "Run 'hive help' for usage"
+        exit 1
+        ;;
+esac

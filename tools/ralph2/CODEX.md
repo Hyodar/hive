@@ -1,6 +1,6 @@
-# Ralph2 Agent Instructions (Claude Code)
+# Ralph2 Agent Instructions (Codex)
 
-You are an autonomous coding agent working on a software project.
+You are an autonomous coding agent working on a software project using OpenAI Codex.
 
 ## Your Task
 
@@ -8,9 +8,10 @@ You are an autonomous coding agent working on a software project.
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
-5. Implement that single user story
+5. **Send a start alert using `alertme`** (see Notifications section)
+6. Implement that single user story
 6. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
-7. Update CLAUDE.md files if you discover reusable patterns (see below)
+7. Update CODEX.md files if you discover reusable patterns (see below)
 8. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
 9. Update the PRD to set `passes: true` for the completed story
 10. Append your progress to `progress.txt`
@@ -32,6 +33,12 @@ jq -r '.userStories[] | "\(if .passes then "DONE" else "TODO" end) [\(.priority)
 
 # Mark task as complete (replace TASK_ID with actual ID)
 jq '(.userStories[] | select(.id == "TASK_ID")).passes = true' prd.json > prd.json.tmp && mv prd.json.tmp prd.json
+
+# Get task details
+jq '.userStories[] | select(.id == "US-001")' prd.json
+
+# Check if all tasks complete
+jq 'all(.userStories[]; .passes == true)' prd.json
 ```
 
 ## Progress Report Format
@@ -52,7 +59,7 @@ The learnings section is critical - it helps future iterations avoid repeating m
 
 ## Consolidate Patterns
 
-If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of progress.txt (create it if it doesn't exist). This section should consolidate the most important learnings:
+If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of progress.txt (create it if it doesn't exist):
 
 ```
 ## Codebase Patterns
@@ -63,25 +70,22 @@ If you discover a **reusable pattern** that future iterations should know, add i
 
 Only add patterns that are **general and reusable**, not story-specific details.
 
-## Update CLAUDE.md Files
+## Update CODEX.md Files
 
-Before committing, check if any edited files have learnings worth preserving in nearby CLAUDE.md files:
+Before committing, check if any edited files have learnings worth preserving in nearby CODEX.md files:
 
 1. **Identify directories with edited files** - Look at which directories you modified
-2. **Check for existing CLAUDE.md** - Look for CLAUDE.md in those directories or parent directories
+2. **Check for existing CODEX.md** - Look for CODEX.md in those directories or parent directories
 3. **Add valuable learnings** - If you discovered something future developers/agents should know:
    - API patterns or conventions specific to that module
    - Gotchas or non-obvious requirements
    - Dependencies between files
    - Testing approaches for that area
-   - Configuration or environment requirements
 
 **Do NOT add:**
 - Story-specific implementation details
 - Temporary debugging notes
 - Information already in progress.txt
-
-Only update CLAUDE.md if you have **genuinely reusable knowledge** that would help future work in that directory.
 
 ## Quality Requirements
 
@@ -89,6 +93,7 @@ Only update CLAUDE.md if you have **genuinely reusable knowledge** that would he
 - Do NOT commit broken code
 - Keep changes focused and minimal
 - Follow existing code patterns
+- Prefer small, incremental changes over large refactors
 
 ## Notifications (alertme & promptme)
 
@@ -99,34 +104,39 @@ Only update CLAUDE.md if you have **genuinely reusable knowledge** that would he
 # On task completion
 alertme --title "Task Complete" --description "US-001: Add priority field" --status success
 
+# On warning/issue
+alertme --title "Task Complete with Warnings" --description "US-002 done but tests are slow" --status warning
+
 # On error
-alertme --title "Task Failed" --description "Build errors in component X" --status error
+alertme --title "Task Failed" --description "Build errors in component X" --codeblock "$(cat error.log)" --status error
 
 # Status options: success, info, warning, error
 ```
 
 ### promptme - Get user input (when truly needed)
 ```bash
-# Ask a question and wait for response
+# Ask a question and wait for response (max 5 minutes)
 ANSWER=$(promptme --title "Clarification Needed" --description "Should I use approach A or B?" --timeout 300)
 echo "User said: $ANSWER"
+
+# Ask with code context
+ANSWER=$(promptme --title "Review Required" --description "Is this implementation correct?" --codeblock "$(cat file.ts)" --timeout 600)
 ```
 
 **Always send an alert when:**
+- You start working on a task
 - A task is completed successfully
 - An error occurs that blocks progress
-- You need to pause for user input
+- You discover something important
 - The iteration is ending
 
-## Browser Testing (If Available)
+## Codex-Specific Guidelines
 
-For any story that changes UI, verify it works in the browser if you have browser testing tools configured (e.g., via MCP):
-
-1. Navigate to the relevant page
-2. Verify the UI changes work as expected
-3. Take a screenshot if helpful for the progress log
-
-If no browser tools are available, note in your progress report that manual browser verification is needed.
+1. **Be explicit** - Codex works best with clear, specific instructions
+2. **One change at a time** - Focus on a single task per iteration
+3. **Verify before committing** - Always run tests before marking complete
+4. **Use standard tools** - Prefer standard library functions over custom implementations
+5. **Comment edge cases** - Add comments for non-obvious logic
 
 ## Completion
 
@@ -137,10 +147,26 @@ After completing a user story:
 
 **Completion is determined by checking prd.json** - when all stories have `passes: true`, ralph2 will exit successfully.
 
+## Never Commit Ralph2 Files
+
+**NEVER commit any of these files** - they are managed by the ralph2 loop, not by you:
+- `prd.json`
+- `progress.txt`
+- `ralph2.sh`
+- `ralphsetup`
+- `prompt.md` (ralph2 instructions)
+- `CLAUDE.md` (ralph2 instructions in scripts/ralph/)
+- `CODEX.md` (ralph2 instructions in scripts/ralph/)
+- `AGENTS.md` (ralph2 instructions in scripts/ralph/)
+- `prd.json.example`
+
+Always `git reset` these files if they end up staged.
+
 ## Important
 
 - Work on ONE story per iteration
-- Commit frequently
-- Keep CI green
+- Commit frequently with clear messages
+- Keep CI green at all times
 - Read the Codebase Patterns section in progress.txt before starting
-- **Always use `alertme` to report task completion or errors**
+- **Always use `alertme` to report task start, completion, or errors**
+- Prefer existing patterns over new approaches
