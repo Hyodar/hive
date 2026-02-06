@@ -78,21 +78,6 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
 
-## 📁 Project Structure
-
-```
-agent-setup/
-├── hive                          # CLI entry point
-└── tools/
-    ├── hive/
-    │   ├── init.sh               # Manager initialization
-    │   ├── worker.sh             # Worker subcommands
-    │   └── install-worker.sh     # Runs on worker during setup
-    ├── ralph2/                   # Agent loop + PRD skills
-    ├── telegram-bot/             # Bot service + alertme/promptme
-    └── repo/                     # Git bundle send/fetch/receive
-```
-
 ## ⚙️ Configuration
 
 All state lives in `/etc/hive/` on the manager:
