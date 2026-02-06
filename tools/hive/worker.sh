@@ -123,21 +123,27 @@ worker_setup() {
     local HOST=""
     local NAME=""
     local PASSWORD=""
+    local TAILSCALE_KEY=""
+    local NO_DESKTOP=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             --name) NAME="$2"; shift 2 ;;
             --password) PASSWORD="$2"; shift 2 ;;
+            --tailscale-key) TAILSCALE_KEY="$2"; shift 2 ;;
+            --no-desktop) NO_DESKTOP=true; shift ;;
             --help|-h)
                 cat <<EOF
-Usage: hive worker setup <host> --name <name> [--password <password>]
+Usage: hive worker setup <host> --name <name> [options]
 
 Set up a remote machine as a hive worker via SSH.
 
 Arguments:
-  host        SSH host (IP address, hostname, or user@host)
-  --name      Tailscale machine name for this worker (also sets hostname)
-  --password  Password for the 'worker' user (default: no password, SSH key only)
+  host              SSH host (IP address, hostname, or user@host)
+  --name            Tailscale machine name for this worker (also sets hostname)
+  --password        Password for the 'worker' user (default: SSH key only)
+  --tailscale-key   Tailscale auth key for non-interactive setup
+  --no-desktop      Skip NoMachine, Cinnamon, and VSCode (CLI-only worker)
 
 This will:
   1. Install git on the remote machine
@@ -149,6 +155,7 @@ This will:
   4. Copy Telegram config from this manager
   5. Register the worker (SSH via worker@<name>)
   6. Open an interactive SSH session for final config (tailscale up)
+     (skipped when --tailscale-key is provided)
 EOF
                 exit 0
                 ;;
@@ -164,7 +171,7 @@ EOF
 
     if [ -z "$HOST" ] || [ -z "$NAME" ]; then
         echo -e "${RED}[ERROR]${NC} Both host and --name are required"
-        echo "Usage: hive worker setup <host> --name <name> [--password <password>]"
+        echo "Usage: hive worker setup <host> --name <name> [options]"
         exit 1
     fi
 
@@ -184,10 +191,22 @@ EOF
     else
         echo "  Password:  (none, SSH key only)"
     fi
+    if [ -n "$TAILSCALE_KEY" ]; then
+        echo "  Tailscale: auto-auth (key provided)"
+    else
+        echo "  Tailscale: manual (interactive SSH at end)"
+    fi
+    if [ "$NO_DESKTOP" = true ]; then
+        echo "  Desktop:   none (CLI-only)"
+    else
+        echo "  Desktop:   Cinnamon + NoMachine"
+    fi
     echo ""
-    echo -e "${YELLOW}[IMPORTANT]${NC} Use '${NAME}' as this machine's"
-    echo "Tailscale name when you run 'tailscale up' later."
-    echo ""
+    if [ -z "$TAILSCALE_KEY" ]; then
+        echo -e "${YELLOW}[IMPORTANT]${NC} Use '${NAME}' as this machine's"
+        echo "Tailscale name when you run 'tailscale up' later."
+        echo ""
+    fi
     read -p "Continue? (y/N): " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "Cancelled."
@@ -218,10 +237,16 @@ EOF
     scp -q "$BUNDLE_FILE" "$HOST:/tmp/agent-setup.bundle"
     ssh "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
 
-    echo -e "${BLUE}[3/6]${NC} Running worker installation (interactive)..."
+    echo -e "${BLUE}[3/6]${NC} Running worker installation..."
     INSTALL_ARGS="--name '$NAME'"
     if [ -n "$PASSWORD" ]; then
         INSTALL_ARGS="$INSTALL_ARGS --password '$PASSWORD'"
+    fi
+    if [ -n "$TAILSCALE_KEY" ]; then
+        INSTALL_ARGS="$INSTALL_ARGS --tailscale-key '$TAILSCALE_KEY'"
+    fi
+    if [ "$NO_DESKTOP" = true ]; then
+        INSTALL_ARGS="$INSTALL_ARGS --no-desktop"
     fi
     ssh -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh $INSTALL_ARGS"
 
@@ -244,15 +269,22 @@ EOF
     echo "  Worker '$NAME' is ready"
     echo "========================================"
     echo -e "${NC}"
-    echo "Opening SSH session for final configuration."
-    echo "You should run:"
-    echo "  sudo tailscale up --hostname=$NAME    # Connect to tailnet"
-    echo "  exit                                  # When done"
-    echo ""
-    echo -e "${BLUE}Connecting as worker@...${NC}"
-    # SSH as worker user to the original host to run tailscale up
-    BARE_HOST="${HOST#*@}"
-    ssh -t "worker@$BARE_HOST" || true
+
+    if [ -n "$TAILSCALE_KEY" ]; then
+        echo "Tailscale is connected. Worker is fully configured."
+        echo ""
+        echo "Connect with:  hive worker ssh $NAME"
+    else
+        echo "Opening SSH session for final configuration."
+        echo "You should run:"
+        echo "  sudo tailscale up --hostname=$NAME    # Connect to tailnet"
+        echo "  exit                                  # When done"
+        echo ""
+        echo -e "${BLUE}Connecting as worker@...${NC}"
+        # SSH as worker user to the original host to run tailscale up
+        BARE_HOST="${HOST#*@}"
+        ssh -t "worker@$BARE_HOST" || true
+    fi
 }
 
 # ---- Route subcommand ----

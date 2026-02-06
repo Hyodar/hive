@@ -26,10 +26,14 @@ fi
 # Parse arguments
 WORKER_NAME=""
 WORKER_PASSWORD=""
+TAILSCALE_KEY=""
+NO_DESKTOP=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --name) WORKER_NAME="$2"; shift 2 ;;
         --password) WORKER_PASSWORD="$2"; shift 2 ;;
+        --tailscale-key) TAILSCALE_KEY="$2"; shift 2 ;;
+        --no-desktop) NO_DESKTOP=true; shift ;;
         *) shift ;;
     esac
 done
@@ -160,44 +164,63 @@ log_success "xclaude, xcodex, xamp"
 
 # ---- Desktop & Remote Access ----
 
-log_info "Installing VSCode..."
-if ! command -v code &>/dev/null; then
-    wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /tmp/packages.microsoft.gpg
-    install -D -o root -g root -m 644 /tmp/packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
-    echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
-    rm -f /tmp/packages.microsoft.gpg
-    apt-get update
-    apt-get install -y code
-fi
-log_success "VSCode"
+if [ "$NO_DESKTOP" = false ]; then
+    log_info "Installing VSCode..."
+    if ! command -v code &>/dev/null; then
+        wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > /tmp/packages.microsoft.gpg
+        install -D -o root -g root -m 644 /tmp/packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+        echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" > /etc/apt/sources.list.d/vscode.list
+        rm -f /tmp/packages.microsoft.gpg
+        apt-get update
+        apt-get install -y code
+    fi
+    log_success "VSCode"
 
-log_info "Installing NoMachine..."
-if ! command -v nxserver &>/dev/null; then
-    ARCH=$(dpkg --print-architecture)
-    [ "$ARCH" = "amd64" ] && NM_ARCH="amd64" || NM_ARCH="arm64"
-    wget -q "https://download.nomachine.com/download/8.14/Linux/nomachine_8.14.2_1_${NM_ARCH}.deb" -O /tmp/nomachine.deb
-    apt-get install -y /tmp/nomachine.deb
-    rm /tmp/nomachine.deb
+    log_info "Installing NoMachine..."
+    if ! command -v nxserver &>/dev/null; then
+        ARCH=$(dpkg --print-architecture)
+        [ "$ARCH" = "amd64" ] && NM_ARCH="amd64" || NM_ARCH="arm64"
+        wget -q "https://download.nomachine.com/download/8.14/Linux/nomachine_8.14.2_1_${NM_ARCH}.deb" -O /tmp/nomachine.deb
+        apt-get install -y /tmp/nomachine.deb
+        rm /tmp/nomachine.deb
+    fi
+    log_success "NoMachine"
+else
+    log_info "Skipping desktop environment (--no-desktop)"
+    log_success "CLI-only mode"
 fi
-log_success "NoMachine"
 
 log_info "Installing Tailscale..."
 command -v tailscale &>/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
 log_success "Tailscale"
 
+if [ -n "$TAILSCALE_KEY" ]; then
+    log_info "Authenticating Tailscale..."
+    tailscale up --authkey="$TAILSCALE_KEY" --hostname="$WORKER_NAME"
+    log_success "Tailscale connected (hostname: $WORKER_NAME)"
+fi
+
 log_info "Configuring firewall..."
 command -v ufw &>/dev/null || apt-get install -y ufw
 ufw allow ssh
-ufw allow from 100.64.0.0/10 to any port 4000 proto tcp
-ufw allow from 100.64.0.0/10 to any port 4000 proto udp
-ufw deny 4000
+if [ "$NO_DESKTOP" = false ]; then
+    ufw allow from 100.64.0.0/10 to any port 4000 proto tcp
+    ufw allow from 100.64.0.0/10 to any port 4000 proto udp
+    ufw deny 4000
+fi
 ufw --force enable
-log_success "UFW (NoMachine restricted to Tailscale)"
+if [ "$NO_DESKTOP" = false ]; then
+    log_success "UFW (NoMachine restricted to Tailscale)"
+else
+    log_success "UFW (SSH only)"
+fi
 
-log_info "Installing Cinnamon desktop..."
-apt-get install -y cinnamon-desktop-environment lightdm
-systemctl set-default graphical.target
-log_success "Cinnamon"
+if [ "$NO_DESKTOP" = false ]; then
+    log_info "Installing Cinnamon desktop..."
+    apt-get install -y cinnamon-desktop-environment lightdm
+    systemctl set-default graphical.target
+    log_success "Cinnamon"
+fi
 
 # ---- Agent Tools ----
 
