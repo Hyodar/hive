@@ -204,6 +204,31 @@ install_tailscale() {
     fi
 }
 
+# Configure UFW to restrict NoMachine to Tailscale only
+configure_firewall() {
+    log_info "Configuring UFW firewall..."
+
+    # Install ufw if not present
+    if ! command -v ufw &> /dev/null; then
+        apt-get install -y ufw
+    fi
+
+    # Allow SSH so we don't lock ourselves out
+    ufw allow ssh
+
+    # Allow NoMachine (port 4000) only from Tailscale network (100.64.0.0/10)
+    ufw allow from 100.64.0.0/10 to any port 4000 proto tcp
+    ufw allow from 100.64.0.0/10 to any port 4000 proto udp
+
+    # Deny NoMachine port from all other sources
+    ufw deny 4000
+
+    # Enable UFW (--force to avoid interactive prompt)
+    ufw --force enable
+
+    log_success "UFW configured: NoMachine (port 4000) restricted to Tailscale network only"
+}
+
 # Install Cinnamon desktop
 install_cinnamon() {
     log_info "Installing Cinnamon desktop environment..."
@@ -359,6 +384,7 @@ main() {
     log_info "Installing remote access tools..."
     install_nomachine
     install_tailscale
+    configure_firewall
 
     echo ""
     log_info "Installing desktop environment..."
