@@ -1,0 +1,168 @@
+#!/bin/bash
+# repo-receive - Apply a git bundle to a local repository
+# Used by repo-send (via SSH) or standalone.
+#
+# Usage: repo-receive <bundle-file> <branch> [options]
+#   -p, --path <path>   Target repo path (default: <base_path>/<repo-name>)
+#   -h, --help          Show help
+#
+# Config: ~/.repo-transfer/config
+#   base_path=~    # Base directory for repos (default: ~)
+
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# Load config from ~/.repo-transfer/config
+load_config() {
+    local config_file="$HOME/.repo-transfer/config"
+    REPO_TRANSFER_BASE_PATH="$HOME"
+
+    if [ -f "$config_file" ]; then
+        while IFS='=' read -r key value; do
+            [[ "$key" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$key" ]] && continue
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            value="${value/#\~/$HOME}"
+            case "$key" in
+                base_path) REPO_TRANSFER_BASE_PATH="$value" ;;
+            esac
+        done < "$config_file"
+    fi
+}
+
+usage() {
+    load_config
+    cat <<EOF
+Usage: repo-receive [options] <bundle-file> <branch>
+
+Apply a git bundle to a local repository. If the repo doesn't exist,
+it is created from the bundle. Otherwise, the branch is updated.
+
+Arguments:
+  bundle-file   Path to the .bundle file
+  branch        Branch name to check out
+
+Options:
+  -p, --path <path>   Target repo path (default: $REPO_TRANSFER_BASE_PATH/<repo-name>)
+  -h, --help          Show this help message
+
+Config (~/.repo-transfer/config):
+  base_path=~          Base directory for repos (default: ~)
+
+Examples:
+  repo-receive /tmp/myrepo.bundle main
+  repo-receive /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
+EOF
+}
+
+BUNDLE=""
+BRANCH=""
+TARGET_PATH=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--path) TARGET_PATH="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        -*)
+            echo -e "${RED}Unknown option: $1${NC}"
+            usage; exit 1 ;;
+        *)
+            if [ -z "$BUNDLE" ]; then BUNDLE="$1"
+            elif [ -z "$BRANCH" ]; then BRANCH="$1"
+            else echo -e "${RED}Too many arguments${NC}"; usage; exit 1
+            fi
+            shift ;;
+    esac
+done
+
+if [ -z "$BUNDLE" ] || [ -z "$BRANCH" ]; then
+    echo -e "${RED}Error: bundle-file and branch are required${NC}"
+    usage
+    exit 1
+fi
+
+if [ ! -f "$BUNDLE" ]; then
+    echo -e "${RED}Error: bundle file not found: $BUNDLE${NC}"
+    exit 1
+fi
+
+# Load config for default base path
+load_config
+
+# Derive repo name from bundle filename (strip path and .bundle extension)
+BUNDLE_BASENAME=$(basename "$BUNDLE")
+REPO_NAME="${BUNDLE_BASENAME%%.*}"
+# Strip the transfer timestamp suffix if present (repo-transfer-TIMESTAMP pattern)
+REPO_NAME=$(echo "$REPO_NAME" | sed 's/-[0-9]*$//')
+
+# Expand ~ in TARGET_PATH, use config base_path as default
+if [ -z "$TARGET_PATH" ]; then
+    TARGET_PATH="$REPO_TRANSFER_BASE_PATH/$REPO_NAME"
+fi
+TARGET_PATH="${TARGET_PATH/#\~/$HOME}"
+
+# Verify the bundle is valid
+if ! git bundle verify "$BUNDLE" >/dev/null 2>&1; then
+    # Could be incremental - that's fine, we'll try and let fetch handle it
+    true
+fi
+
+if [ ! -d "$TARGET_PATH" ]; then
+    # First time: clone from bundle
+    echo -e "${BLUE}Creating new repo at $TARGET_PATH...${NC}"
+    mkdir -p "$(dirname "$TARGET_PATH")"
+    git clone "$BUNDLE" "$TARGET_PATH" -b "$BRANCH"
+    cd "$TARGET_PATH"
+    # Remove the origin that points to the bundle file - it's not useful
+    git remote remove origin 2>/dev/null || true
+    echo -e "${GREEN}Cloned and checked out '$BRANCH' at $TARGET_PATH${NC}"
+
+elif [ ! -d "$TARGET_PATH/.git" ]; then
+    echo -e "${RED}Error: $TARGET_PATH exists but is not a git repository${NC}"
+    exit 1
+
+else
+    # Existing repo: fetch from bundle and update branch
+    cd "$TARGET_PATH"
+
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+
+    if [ "$CURRENT_BRANCH" = "$BRANCH" ]; then
+        # We're on the target branch - check for uncommitted changes
+        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+            echo -e "${YELLOW}Warning: uncommitted changes on '$BRANCH' - stashing them${NC}"
+            git stash push -m "repo-receive auto-stash $(date +%Y%m%d-%H%M%S)"
+        fi
+
+        # Fetch to FETCH_HEAD, then fast-forward merge
+        git fetch "$BUNDLE" "$BRANCH"
+        if git merge --ff-only FETCH_HEAD 2>/dev/null; then
+            echo -e "${GREEN}Fast-forwarded '$BRANCH'${NC}"
+        else
+            echo -e "${YELLOW}Cannot fast-forward. Resetting to received state...${NC}"
+            git reset --hard FETCH_HEAD
+            echo -e "${GREEN}Reset '$BRANCH' to received state${NC}"
+        fi
+    else
+        # We're on a different branch - update the target ref directly
+        if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+            # Branch exists locally - update it
+            git fetch "$BUNDLE" "$BRANCH:$BRANCH"
+            echo -e "${GREEN}Updated '$BRANCH'${NC}"
+        else
+            # Branch doesn't exist - create it
+            git fetch "$BUNDLE" "$BRANCH:$BRANCH"
+            echo -e "${GREEN}Created '$BRANCH'${NC}"
+        fi
+        git checkout "$BRANCH"
+        echo -e "${GREEN}Checked out '$BRANCH'${NC}"
+    fi
+
+    echo -e "${GREEN}Repo updated at $TARGET_PATH${NC}"
+fi
