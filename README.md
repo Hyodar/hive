@@ -25,16 +25,23 @@ This SSHes into the machine, installs all AI tools and dependencies, copies the 
 ```bash
 cd ~/my-project
 hive repo send agent-vm-1 main     # Push repo to worker
-# ... worker does its thing ...
+
+hive repo ssh agent-vm-1 # SSH there to e.g. run ralph
+
 hive repo fetch agent-vm-1 main    # Pull results back
 ```
 
-### 4. Access a worker
+### Using Ralph
 
 ```bash
-hive worker ssh agent-vm-1         # SSH into the worker
-hive repo ssh agent-vm-1           # SSH directly into the repo directory
-# Or use NoMachine for GUI access
+ralphsetup
+```
+
+With any of the AI agents, ask it to "load the PRD skill to develop <your feature>" then discuss requirements, and when done ask it to "load the ralph skill and add tasks to prd.json based on <task file>.
+
+Then:
+```bash
+ralph2 --tool <claude|codex|amp> <iterations>
 ```
 
 ## 📖 Hive CLI
