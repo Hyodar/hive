@@ -4,7 +4,7 @@
 
 set -e
 
-RALPH2_DIR="/etc/agent-setup/ralph2"
+RALPH2_DIR="/etc/agent-setup/tools/ralph2"
 
 # Colors
 RED='\033[0;31m'

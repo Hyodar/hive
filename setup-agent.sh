@@ -1,6 +1,8 @@
 #!/bin/bash
-# Agent Machine Setup Script
-# Sets up a machine for agentic AI development work
+# Setup Agent - Set up this machine as a hive worker
+# Installs AI tools, development environment, desktop, and agent tooling
+#
+# Usage: sudo ./setup-agent.sh
 
 set -e
 
@@ -8,19 +10,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="/etc/agent-setup"
 BIN_DIR="/usr/local/bin"
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Check if running as root
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         log_error "Please run as root (use sudo)"
@@ -28,7 +29,8 @@ check_root() {
     fi
 }
 
-# Update system packages
+# ---- System ----
+
 update_system() {
     log_info "Updating system packages..."
     apt-get update -y
@@ -36,7 +38,6 @@ update_system() {
     log_success "System packages updated"
 }
 
-# Install basic dependencies
 install_dependencies() {
     log_info "Installing basic dependencies..."
     apt-get install -y \
@@ -54,75 +55,56 @@ install_dependencies() {
     log_success "Basic dependencies installed"
 }
 
-# Install Python 3 with pip
 install_python() {
     log_info "Installing Python 3 and pip..."
-
-    # Core python packages (available on both Debian and Ubuntu)
     apt-get install -y \
         python3 \
         python3-pip \
         python3-venv \
         python3-dev
-
-    # python3-full is Debian-specific, install if available
     apt-get install -y python3-full 2>/dev/null || true
 
-    # Ensure pip is available (some Ubuntu versions need this)
     if ! command -v pip3 &> /dev/null; then
-        log_info "Installing pip via get-pip.py..."
         curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
         python3 /tmp/get-pip.py --break-system-packages
         rm /tmp/get-pip.py
     fi
-
     log_success "Python 3 and pip installed"
 }
 
-# Install nvm and Node.js 24
 install_nodejs() {
     log_info "Installing nvm and Node.js 24..."
-
-    # Install nvm system-wide
     export NVM_DIR="/usr/local/nvm"
     mkdir -p "$NVM_DIR"
 
     if [ ! -f "$NVM_DIR/nvm.sh" ]; then
-        log_info "Downloading and installing nvm..."
         curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | NVM_DIR="$NVM_DIR" bash
     fi
 
-    # Source nvm
     [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 
-    # Install Node.js 24
-    log_info "Installing Node.js 24..."
     nvm install 24
     nvm use 24
     nvm alias default 24
 
-    # Create system-wide symlinks
     NODE_PATH=$(nvm which 24)
     NODE_DIR=$(dirname "$NODE_PATH")
     ln -sf "$NODE_PATH" /usr/local/bin/node
     ln -sf "$NODE_DIR/npm" /usr/local/bin/npm
     ln -sf "$NODE_DIR/npx" /usr/local/bin/npx
 
-    # Add nvm to system profile for all users
     cat > /etc/profile.d/nvm.sh << 'NVMEOF'
 export NVM_DIR="/usr/local/nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 NVMEOF
-
     chmod +x /etc/profile.d/nvm.sh
 
-    log_success "nvm and Node.js 24 installed"
-    log_info "Node version: $(node --version)"
-    log_info "npm version: $(npm --version)"
+    log_success "Node.js 24 installed ($(node --version))"
 }
 
-# Install Claude Code
+# ---- AI Tools ----
+
 install_claude_code() {
     log_info "Installing Claude Code..."
     if ! command -v claude &> /dev/null; then
@@ -133,7 +115,6 @@ install_claude_code() {
     fi
 }
 
-# Install Codex (OpenAI)
 install_codex() {
     log_info "Installing Codex CLI..."
     if ! command -v codex &> /dev/null; then
@@ -144,7 +125,6 @@ install_codex() {
     fi
 }
 
-# Install Amp
 install_amp() {
     log_info "Installing Amp..."
     if ! command -v amp &> /dev/null; then
@@ -155,7 +135,32 @@ install_amp() {
     fi
 }
 
-# Install VSCode
+setup_aliases() {
+    log_info "Setting up sandboxless wrappers..."
+
+    cat > "$BIN_DIR/xclaude" << 'EOF'
+#!/bin/bash
+exec claude --dangerously-skip-permissions "$@"
+EOF
+    chmod +x "$BIN_DIR/xclaude"
+
+    cat > "$BIN_DIR/xcodex" << 'EOF'
+#!/bin/bash
+exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" "$@"
+EOF
+    chmod +x "$BIN_DIR/xcodex"
+
+    cat > "$BIN_DIR/xamp" << 'EOF'
+#!/bin/bash
+exec amp --dangerously-allow-all "$@"
+EOF
+    chmod +x "$BIN_DIR/xamp"
+
+    log_success "Wrappers created: xclaude, xcodex, xamp"
+}
+
+# ---- Development Environment ----
+
 install_vscode() {
     log_info "Installing Visual Studio Code..."
     if ! command -v code &> /dev/null; then
@@ -171,7 +176,6 @@ install_vscode() {
     fi
 }
 
-# Install NoMachine
 install_nomachine() {
     log_info "Installing NoMachine..."
     if ! command -v nxserver &> /dev/null; then
@@ -192,44 +196,29 @@ install_nomachine() {
     fi
 }
 
-# Install Tailscale
 install_tailscale() {
     log_info "Installing Tailscale..."
     if ! command -v tailscale &> /dev/null; then
         curl -fsSL https://tailscale.com/install.sh | sh
         log_success "Tailscale installed"
-        log_info "Run 'sudo tailscale up' to connect to your tailnet"
     else
         log_info "Tailscale already installed"
     fi
 }
 
-# Configure UFW to restrict NoMachine to Tailscale only
 configure_firewall() {
     log_info "Configuring UFW firewall..."
-
-    # Install ufw if not present
     if ! command -v ufw &> /dev/null; then
         apt-get install -y ufw
     fi
-
-    # Allow SSH so we don't lock ourselves out
     ufw allow ssh
-
-    # Allow NoMachine (port 4000) only from Tailscale network (100.64.0.0/10)
     ufw allow from 100.64.0.0/10 to any port 4000 proto tcp
     ufw allow from 100.64.0.0/10 to any port 4000 proto udp
-
-    # Deny NoMachine port from all other sources
     ufw deny 4000
-
-    # Enable UFW (--force to avoid interactive prompt)
     ufw --force enable
-
-    log_success "UFW configured: NoMachine (port 4000) restricted to Tailscale network only"
+    log_success "UFW configured: NoMachine restricted to Tailscale"
 }
 
-# Install Cinnamon desktop
 install_cinnamon() {
     log_info "Installing Cinnamon desktop environment..."
     apt-get install -y cinnamon-desktop-environment lightdm
@@ -237,49 +226,36 @@ install_cinnamon() {
     log_success "Cinnamon desktop installed"
 }
 
-# Setup global aliases for sandboxless execution
-setup_aliases() {
-    log_info "Setting up global aliases..."
+# ---- Agent Tools ----
 
-    # Create xclaude wrapper
-    cat > "$BIN_DIR/xclaude" << 'EOF'
-#!/bin/bash
-# xclaude - Run Claude Code without sandbox and permission prompts
-exec claude --dangerously-skip-permissions "$@"
-EOF
-    chmod +x "$BIN_DIR/xclaude"
+install_tools() {
+    log_info "Installing hive tools..."
+    mkdir -p "$CONFIG_DIR/tools"
 
-    # Create xcodex wrapper
-    cat > "$BIN_DIR/xcodex" << 'EOF'
-#!/bin/bash
-# xcodex - Run Codex without sandbox and permission prompts
-# Uses gpt-5.2-codex xhigh model with full dangerous mode
-exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" "$@"
-EOF
-    chmod +x "$BIN_DIR/xcodex"
+    # Install hive subcommands and agent tools (no repo-transfer on worker)
+    cp -r "$SCRIPT_DIR/tools/hive" "$CONFIG_DIR/tools/"
+    cp -r "$SCRIPT_DIR/tools/ralph2" "$CONFIG_DIR/tools/"
+    cp -r "$SCRIPT_DIR/tools/telegram-bot" "$CONFIG_DIR/tools/"
 
-    # Create xamp wrapper
-    cat > "$BIN_DIR/xamp" << 'EOF'
-#!/bin/bash
-# xamp - Run Amp without sandbox and permission prompts
-exec amp --dangerously-allow-all "$@"
-EOF
-    chmod +x "$BIN_DIR/xamp"
+    chmod +x "$CONFIG_DIR/tools/ralph2/ralph2.sh"
+    chmod +x "$CONFIG_DIR/tools/ralph2/ralphsetup"
 
-    log_success "Global aliases created: xclaude, xcodex, xamp"
+    log_success "Tools installed to $CONFIG_DIR/tools/"
 }
 
-# Setup Telegram bot service
+install_hive() {
+    log_info "Installing hive CLI..."
+    cp "$SCRIPT_DIR/hive" "$BIN_DIR/hive"
+    chmod +x "$BIN_DIR/hive"
+    log_success "hive installed to $BIN_DIR/hive"
+}
+
 setup_telegram_bot() {
     log_info "Setting up Telegram bot service..."
+    mkdir -p "$CONFIG_DIR/pending_prompts"
 
-    # Create config directory
-    mkdir -p "$CONFIG_DIR"
+    cp "$SCRIPT_DIR/tools/telegram-bot/agent_telegram_bot.py" "$CONFIG_DIR/"
 
-    # Copy Python bot script
-    cp "$SCRIPT_DIR/telegram-bot/agent_telegram_bot.py" "$CONFIG_DIR/"
-
-    # Create default config if not exists
     if [ ! -f "$CONFIG_DIR/telegram_config.json" ]; then
         cat > "$CONFIG_DIR/telegram_config.json" << 'EOF'
 {
@@ -291,89 +267,43 @@ setup_telegram_bot() {
 EOF
     fi
 
-    # Create Python virtual environment
     python3 -m venv "$CONFIG_DIR/venv"
     "$CONFIG_DIR/venv/bin/pip" install python-telegram-bot aiofiles
 
-    # Copy alertme and promptme scripts
-    cp "$SCRIPT_DIR/telegram-bot/alertme" "$BIN_DIR/"
-    cp "$SCRIPT_DIR/telegram-bot/promptme" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/alertme"
-    chmod +x "$BIN_DIR/promptme"
-
-    # Install systemd service
-    cp "$SCRIPT_DIR/telegram-bot/agent-telegram-bot.service" /etc/systemd/system/
+    cp "$SCRIPT_DIR/tools/telegram-bot/agent-telegram-bot.service" /etc/systemd/system/
     systemctl daemon-reload
 
     log_success "Telegram bot service configured"
-    log_info "Run 'tgsetup' to configure the bot"
 }
 
-# Install telegram bot setup script
-install_telegram_setup() {
-    log_info "Installing Telegram bot setup script..."
-    cp "$SCRIPT_DIR/telegram-bot/tgsetup" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/tgsetup"
-    log_success "Telegram bot setup script installed (tgsetup)"
-}
-
-# Install ralph2 and ralphsetup
 install_ralph2() {
-    log_info "Installing ralph2 and ralphsetup..."
-
-    # Create ralph2 directory structure
+    log_info "Installing ralph2..."
     mkdir -p "$CONFIG_DIR/ralph2"
     mkdir -p "$CONFIG_DIR/ralph2/skills/prd"
     mkdir -p "$CONFIG_DIR/ralph2/skills/ralph"
 
-    # Copy ralph2 files
-    cp "$SCRIPT_DIR/ralph2/ralph2.sh" "$CONFIG_DIR/ralph2/"
-    cp "$SCRIPT_DIR/ralph2/prompt.md" "$CONFIG_DIR/ralph2/"
-    cp "$SCRIPT_DIR/ralph2/CLAUDE.md" "$CONFIG_DIR/ralph2/"
-    cp "$SCRIPT_DIR/ralph2/AGENTS.md" "$CONFIG_DIR/ralph2/"
-    cp "$SCRIPT_DIR/ralph2/CODEX.md" "$CONFIG_DIR/ralph2/"
-    cp "$SCRIPT_DIR/ralph2/prd.json.example" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/ralph2.sh" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/prompt.md" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/CLAUDE.md" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/AGENTS.md" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/CODEX.md" "$CONFIG_DIR/ralph2/"
+    cp "$SCRIPT_DIR/tools/ralph2/prd.json.example" "$CONFIG_DIR/ralph2/"
 
-    # Copy skills if they exist
-    if [ -d "$SCRIPT_DIR/ralph2/skills" ]; then
-        cp -r "$SCRIPT_DIR/ralph2/skills/"* "$CONFIG_DIR/ralph2/skills/"
+    if [ -d "$SCRIPT_DIR/tools/ralph2/skills" ]; then
+        cp -r "$SCRIPT_DIR/tools/ralph2/skills/"* "$CONFIG_DIR/ralph2/skills/"
     fi
 
     chmod +x "$CONFIG_DIR/ralph2/ralph2.sh"
-
-    # Create global ralph2 command
-    cat > "$BIN_DIR/ralph2" << EOF
-#!/bin/bash
-# ralph2 - Enhanced Ralph agent loop with Codex support
-exec "$CONFIG_DIR/ralph2/ralph2.sh" "\$@"
-EOF
-    chmod +x "$BIN_DIR/ralph2"
-
-    # Install ralphsetup
-    cp "$SCRIPT_DIR/ralph2/ralphsetup" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/ralphsetup"
-
-    log_success "ralph2 and ralphsetup installed"
+    log_success "ralph2 installed"
 }
 
-# Install repo-transfer tools
-install_repo_transfer() {
-    log_info "Installing repo-transfer tools..."
+# ---- Main ----
 
-    cp "$SCRIPT_DIR/repo-transfer/repo-send" "$BIN_DIR/"
-    cp "$SCRIPT_DIR/repo-transfer/repo-fetch" "$BIN_DIR/"
-    cp "$SCRIPT_DIR/repo-transfer/repo-receive" "$BIN_DIR/"
-    chmod +x "$BIN_DIR/repo-send" "$BIN_DIR/repo-fetch" "$BIN_DIR/repo-receive"
-
-    log_success "repo-transfer tools installed (repo-send, repo-fetch, repo-receive)"
-}
-
-# Main installation
 main() {
     check_root
 
     echo "========================================"
-    echo "  Agent Machine Setup"
+    echo "  Hive Agent (Worker) Setup"
     echo "========================================"
     echo ""
 
@@ -387,42 +317,33 @@ main() {
     install_claude_code
     install_codex
     install_amp
+    setup_aliases
 
     echo ""
-    log_info "Installing development tools..."
+    log_info "Installing development environment..."
     install_vscode
-
-    echo ""
-    log_info "Installing remote access tools..."
     install_nomachine
     install_tailscale
     configure_firewall
-
-    echo ""
-    log_info "Installing desktop environment..."
     install_cinnamon
 
     echo ""
-    log_info "Setting up agent tools..."
-    setup_aliases
+    log_info "Installing agent tools..."
+    install_tools
+    install_hive
     setup_telegram_bot
-    install_telegram_setup
     install_ralph2
-    install_repo_transfer
 
     echo ""
     echo "========================================"
-    log_success "Setup complete!"
+    log_success "Agent setup complete!"
     echo "========================================"
     echo ""
     echo "Next steps:"
-    echo "  1. Run 'tgsetup' to configure the Telegram bot"
-    echo "  2. Run 'sudo tailscale up' to connect to your tailnet"
-    echo "  3. Use 'xclaude', 'xcodex', 'xamp' for sandboxless AI tool execution"
-    echo "  4. Use 'alertme' and 'promptme' for notifications"
-    echo "  5. Use 'ralph2' for autonomous agent loops"
-    echo "  6. Use 'ralphsetup <directory>' to initialize ralph2 in a project"
-    echo "  7. Use 'repo-send <host>' and 'repo-fetch <host>' to transfer repos via bundles"
+    echo "  1. sudo tailscale up              # Connect to tailnet"
+    echo "  2. Use xclaude, xcodex, xamp      # Sandboxless AI tools"
+    echo "  3. hive ralph2 --status            # Check ralph2"
+    echo "  4. hive alertme -t 'Hello'         # Test Telegram (if configured)"
     echo ""
 }
 

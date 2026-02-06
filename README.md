@@ -1,193 +1,171 @@
-# Agent Setup
+# Agent Setup (Hive)
 
-A comprehensive setup script for configuring machines for agentic AI development work. Installs AI coding tools, remote access software, and provides an integrated notification system with Telegram.
+A manager/worker system for orchestrating agentic AI development across multiple machines. The **manager** controls the swarm, and **workers** run AI coding agents autonomously.
 
-## Features
+## Architecture
 
-- **AI Coding Tools**: Claude Code, Codex, and Amp with sandboxless execution wrappers
-- **Development Environment**: VSCode, Node.js, and essential dependencies
-- **Remote Access**: NoMachine and Tailscale for remote development
-- **Desktop Environment**: Cinnamon desktop for GUI access
-- **Telegram Integration**: alertme/promptme scripts for notifications and interactive prompts
-- **Ralph2**: Enhanced AI agent loop with improved task management and multi-tool support
+```
+Manager                          Workers
+┌──────────────────┐      ┌──────────────────┐
+│  hive init       │      │  AI tools         │
+│  hive worker *   │ SSH  │  ralph2           │
+│  hive repo send  │─────>│  alertme/promptme │
+│  hive repo fetch │<─────│  xclaude/xcodex   │
+│  Telegram bot    │      │  NoMachine + VNC  │
+└──────────────────┘      └──────────────────┘
+        │                         │
+        └─── Tailscale VPN ───────┘
+```
 
 ## Quick Start
 
+### Manager Setup
+
 ```bash
-# Clone and run setup
 git clone <repo-url>
 cd agent-setup
-sudo ./setup.sh
-
-# Configure Telegram bot
-tgsetup
-
-# Initialize ralph2 in a project
-ralphsetup /path/to/your/project
+sudo ./setup-manager.sh      # Install deps, Tailscale, Telegram, hive
+sudo tailscale up             # Connect to tailnet
+sudo hive init                # Configure Telegram bot & worker registry
 ```
 
-## Components
+### Worker Setup (from Manager)
+
+```bash
+hive worker setup root@192.168.1.100 --name agent-vm-1
+# This will SSH in, install everything, copy Telegram config,
+# and open a session for you to run 'tailscale up'
+```
+
+### Manual Worker Setup
+
+```bash
+git clone <repo-url>
+cd agent-setup
+sudo ./setup-agent.sh
+sudo tailscale up
+```
+
+## Hive CLI
+
+All tools are accessed through the `hive` command.
+
+### Manager Commands
+
+```bash
+hive init                                   # Initialize manager (Telegram, registry)
+hive worker setup <host> --name <name>      # Set up a remote worker via SSH
+hive worker add <name> [--host <host>]      # Register a worker without setup
+hive worker ls                              # List registered workers
+hive worker rm <name>                       # Remove a worker
+```
+
+### Repo Transfer
+
+```bash
+hive repo send <worker> [branch]            # Send current repo to a worker
+hive repo fetch <worker> [branch]           # Fetch a repo from a worker
+```
+
+### Agent Tools (on Workers)
+
+```bash
+hive ralph2 [args]                          # Run ralph2 agent loop
+hive ralphsetup <dir>                       # Initialize ralph2 in a project
+hive alertme --title "Done" --status success  # Send Telegram alert
+hive promptme --title "Continue?" --timeout 60  # Prompt via Telegram
+hive tgsetup                                # Configure Telegram bot
+```
 
 ### AI Tool Wrappers
 
-Sandboxless execution wrappers for autonomous agent work:
+Sandboxless execution wrappers installed on workers:
 
 | Command | Tool | Description |
 |---------|------|-------------|
 | `xclaude` | Claude Code | `claude --dangerously-skip-permissions` |
-| `xcodex` | Codex | `codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh"` |
+| `xcodex` | Codex | `codex --dangerously-bypass-approvals-and-sandbox` |
 | `xamp` | Amp | `amp --dangerously-allow-all` |
 
-### Telegram Notifications
+## Telegram Notifications
 
-#### alertme
-
-Send notifications to your Telegram chat:
+The Telegram bot is set up on the manager and shared with all workers.
 
 ```bash
-# Success notification
-alertme --title "Build Complete" --description "All tests passed" --status success
+# Alert (one-way notification)
+hive alertme --title "Build Complete" --description "All tests passed" --status success
 
-# Error notification
-alertme --title "Build Failed" --description "TypeScript errors" --codeblock "$(cat error.log)" --status error
-
-# Options
-#   --title, -t       Alert title (required)
-#   --description, -d Alert description
-#   --codeblock, -c   Code block to include
-#   --status, -s      success | info | warning | error
+# Prompt (wait for reply)
+ANSWER=$(hive promptme --title "Confirm Deploy" --description "Deploy to production?" --timeout 60)
 ```
 
-#### promptme
+## Ralph2
 
-Send a prompt and wait for user response:
+Enhanced AI agent loop for autonomous task execution from a PRD.
 
 ```bash
-# Get user input
-ANSWER=$(promptme --title "Confirm Deploy" --description "Deploy to production?" --timeout 60)
-echo "User said: $ANSWER"
-
-# Options (same as alertme plus):
-#   --timeout, -T     Timeout in seconds (default: 300)
-
-# Exit codes:
-#   0 = success (response on stdout)
-#   1 = error
-#   2 = timeout
+hive ralph2 --status              # Check progress
+hive ralph2 --list                # List all tasks
+hive ralph2 --tool codex 5        # Run 5 iterations with Codex
+hive ralph2 --interactive --alert # Interactive mode with Telegram alerts
 ```
 
-### Ralph2
-
-Enhanced AI agent loop based on [snarktank/ralph](https://github.com/snarktank/ralph) with:
-
-- Support for Claude Code, Codex, and Amp
-- Improved jq-based task selection and status checking
-- Telegram alert integration
-- Interactive mode for step-by-step execution
+Initialize in a project:
 
 ```bash
-# Check status
-ralph2 --status
-
-# List all tasks
-ralph2 --list
-
-# Show next pending task
-ralph2 --next
-
-# Run with default tool (Claude)
-ralph2 10
-
-# Run with specific tool
-ralph2 --tool codex 5
-ralph2 --tool amp --alert
-
-# Interactive mode
-ralph2 --interactive
-```
-
-#### Initialize in a Project
-
-```bash
-ralphsetup /path/to/project
+hive ralphsetup /path/to/project
 cd /path/to/project
-
-# Customize PRD
 cp scripts/ralph/prd.json.example scripts/ralph/prd.json
-# Edit prd.json with your tasks
-
-# Run
 ./ralph2 --status
-./ralph2
 ```
-
-#### Install Skills Only
-
-```bash
-# Install skills globally without setting up a project
-ralphsetup --skills-only
-
-# Skills are installed to:
-# ~/.config/amp/skills/prd, ~/.config/amp/skills/ralph
-# ~/.claude/skills/prd, ~/.claude/skills/ralph
-```
-
-## Configuration
-
-### Telegram Bot Setup
-
-1. Create a bot via [@BotFather](https://t.me/BotFather) on Telegram
-2. Run `tgsetup` and enter your bot token
-3. Send the binding phrase to your bot to link the chat
-4. The bot runs as a systemd service (`agent-telegram-bot`)
-
-```bash
-# Check service status
-systemctl status agent-telegram-bot
-
-# View logs
-journalctl -u agent-telegram-bot -f
-
-# Restart service
-sudo systemctl restart agent-telegram-bot
-```
-
-### Configuration Files
-
-| File | Purpose |
-|------|---------|
-| `/etc/agent-setup/telegram_config.json` | Telegram bot configuration |
-| `/etc/agent-setup/ralph2/` | Ralph2 default files |
 
 ## File Structure
 
 ```
 agent-setup/
-├── setup.sh                    # Main installation script (uses nvm + Node 24)
-├── telegram-bot/
-│   ├── agent_telegram_bot.py   # Telegram bot service
-│   ├── agent-telegram-bot.service  # systemd service
-│   ├── tgsetup                 # Setup wizard
-│   ├── alertme                 # Alert script
-│   └── promptme                # Prompt script
-└── ralph2/
-    ├── ralph2.sh               # Main agent loop
-    ├── ralphsetup              # Project initializer
-    ├── AGENTS.md               # Agent instructions (general)
-    ├── CLAUDE.md               # Claude Code instructions
-    ├── CODEX.md                # Codex instructions
-    ├── prompt.md               # Amp instructions
-    ├── prd.json.example        # PRD template
-    └── skills/
-        ├── prd/SKILL.md        # PRD generator skill
-        └── ralph/SKILL.md      # PRD to JSON converter skill
+├── hive                        # Central CLI (installed to /usr/local/bin/)
+├── setup-manager.sh            # Manager machine setup
+├── setup-agent.sh              # Worker machine setup
+└── tools/
+    ├── hive/
+    │   ├── init.sh             # hive init implementation
+    │   └── worker.sh           # hive worker subcommands
+    ├── ralph2/
+    │   ├── ralph2.sh           # Agent loop
+    │   ├── ralphsetup          # Project initializer
+    │   ├── CLAUDE.md           # Claude Code instructions
+    │   ├── CODEX.md            # Codex instructions
+    │   ├── prompt.md           # Amp instructions
+    │   ├── AGENTS.md           # General agent instructions
+    │   ├── prd.json.example    # PRD template
+    │   └── skills/             # AI skills (prd, ralph)
+    ├── telegram-bot/
+    │   ├── agent_telegram_bot.py
+    │   ├── agent-telegram-bot.service
+    │   ├── tgsetup
+    │   ├── alertme
+    │   └── promptme
+    └── repo-transfer/
+        ├── repo-send           # Send repo via git bundles
+        ├── repo-fetch          # Fetch repo via git bundles
+        └── repo-receive        # Apply received bundle
 ```
+
+## Configuration
+
+| File | Purpose |
+|------|---------|
+| `/etc/agent-setup/config.json` | Manager/worker role config |
+| `/etc/agent-setup/workers.json` | Registered workers (manager only) |
+| `/etc/agent-setup/telegram_config.json` | Telegram bot config (shared) |
+| `/etc/agent-setup/tools/` | Installed tool scripts |
 
 ## Requirements
 
 - Ubuntu/Debian-based Linux
 - Root access for installation
 - Internet connection
+- Tailscale account (for networking)
 - Telegram account (for notifications)
 
 ## License
