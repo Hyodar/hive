@@ -1,8 +1,8 @@
-# Hive
+# 🐝 Hive
 
 Manage a swarm of AI coding agents across multiple machines.
 
-## Quick Start
+## 🚀 Quick Start
 
 ### 1. Initialize the manager
 
@@ -29,7 +29,15 @@ hive repo send agent-vm-1 main     # Push repo to worker
 hive repo fetch agent-vm-1 main    # Pull results back
 ```
 
-## Hive CLI
+### 4. Access a worker
+
+```bash
+hive worker ssh agent-vm-1         # SSH into the worker
+hive repo ssh agent-vm-1           # SSH directly into the repo directory
+# Or use NoMachine for GUI access
+```
+
+## 📖 Hive CLI
 
 ### Setup
 
@@ -55,7 +63,7 @@ hive repo fetch agent-vm-1 main    # Pull results back
 | `hive repo fetch <worker> [branch]` | Fetch repo back from a worker |
 | `hive repo ssh <worker>` | SSH into worker at the repo directory |
 
-## Worker Tools
+## 🔧 Worker Tools
 
 Installed as standalone commands on each worker by `hive worker setup`.
 
@@ -70,7 +78,7 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 agent-setup/
@@ -85,7 +93,7 @@ agent-setup/
     └── repo/                     # Git bundle send/fetch/receive
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 All state lives in `/etc/hive/` on the manager:
 
@@ -95,7 +103,7 @@ All state lives in `/etc/hive/` on the manager:
 | `workers.json` | Registered workers |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
 
-## Requirements
+## 📋 Requirements
 
 - Ubuntu/Debian-based Linux
 - Tailscale account (networking between machines)
