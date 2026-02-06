@@ -261,6 +261,7 @@ shift 2>/dev/null || true
 
 case "$SUBCMD" in
     setup)   worker_setup "$@" ;;
+    deploy)  exec bash "$HIVE_TOOLS/hive/deploy.sh" "$@" ;;
     add)     worker_add "$@" ;;
     ls|list) worker_ls "$@" ;;
     rm|remove) worker_rm "$@" ;;
@@ -279,11 +280,13 @@ case "$SUBCMD" in
         echo "Usage: hive worker <command>"
         echo ""
         echo "Commands:"
-        echo "  setup <host> --name <name>   Set up a remote worker via SSH"
-        echo "  add <name> [--host <host>]   Register a worker without setup"
-        echo "  ls                           List registered workers"
-        echo "  rm <name>                    Remove a worker from registry"
-        echo "  ssh <name>                   SSH into a worker"
+        echo "  deploy --at <cloud> --name <n>  Deploy a worker to a cloud provider"
+        echo "  deploy --continue <name>        Resume a cloud deployment"
+        echo "  setup <host> --name <name>      Set up a remote worker via SSH"
+        echo "  add <name> [--host <host>]      Register a worker without setup"
+        echo "  ls                              List registered workers"
+        echo "  rm <name>                       Remove a worker from registry"
+        echo "  ssh <name>                      SSH into a worker"
         ;;
     *)
         echo -e "${RED}Unknown worker command: ${SUBCMD:-<none>}${NC}"
