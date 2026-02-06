@@ -50,12 +50,26 @@ if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" << 'EOF'
 {
     "role": "manager",
-    "version": "1.0.0"
+    "version": "1.0.0",
+    "clouds": {
+        "hetzner": {
+            "default_product": "AX41-NVMe",
+            "default_location": "FSN1"
+        }
+    }
 }
 EOF
     echo -e "${GREEN}[OK]${NC} Manager config created"
 else
-    echo -e "${YELLOW}[SKIP]${NC} Config already exists"
+    # Ensure clouds section exists for older configs
+    if ! jq -e '.clouds' "$CONFIG_FILE" >/dev/null 2>&1; then
+        jq '. + {"clouds": {"hetzner": {"default_product": "AX41-NVMe", "default_location": "FSN1"}}}' \
+            "$CONFIG_FILE" > "$CONFIG_FILE.tmp"
+        mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+        echo -e "${GREEN}[OK]${NC} Added cloud defaults to config"
+    else
+        echo -e "${YELLOW}[SKIP]${NC} Config already exists"
+    fi
 fi
 
 if [ ! -f "$WORKERS_FILE" ]; then
