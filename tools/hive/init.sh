@@ -1,6 +1,6 @@
 #!/bin/bash
 # hive init - Initialize this machine as a hive manager
-# Sets up Telegram bot, worker registry, and installs hive to PATH
+# Creates config, worker registry, sets up Telegram bot, installs hive to PATH
 
 set -e
 
@@ -29,29 +29,22 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# ---- Install hive + tools ----
+# ---- Install hive to PATH ----
 
-echo -e "${BLUE}[1/4]${NC} Installing hive..."
-mkdir -p "$HIVE_DIR/tools"
-mkdir -p "$HIVE_DIR/pending_prompts"
+echo -e "${BLUE}[1/3]${NC} Installing hive..."
+mkdir -p "$HIVE_DIR"
 
-# Copy tools to system location
-cp -r "$SCRIPT_DIR/tools/hive" "$HIVE_DIR/tools/"
-cp -r "$SCRIPT_DIR/tools/telegram-bot" "$HIVE_DIR/tools/"
-cp -r "$SCRIPT_DIR/tools/repo-transfer" "$HIVE_DIR/tools/"
-
-# Install hive binary
 cp "$SCRIPT_DIR/hive" "$BIN_DIR/hive"
 chmod +x "$BIN_DIR/hive"
 
-# Record source repo for worker setup
+# Record source repo so hive can find tools
 echo "$SCRIPT_DIR" > "$HIVE_DIR/.source_repo"
 
 echo -e "${GREEN}[OK]${NC} hive installed to $BIN_DIR/hive"
 
 # ---- Config + registry ----
 
-echo -e "${BLUE}[2/4]${NC} Setting up config..."
+echo -e "${BLUE}[2/3]${NC} Setting up config..."
 
 if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" << 'EOF'
@@ -75,12 +68,10 @@ fi
 
 # ---- Telegram bot ----
 
-echo -e "${BLUE}[3/4]${NC} Setting up Telegram bot..."
+echo -e "${BLUE}[3/3]${NC} Setting up Telegram bot..."
 
-# Copy bot script
 cp "$SCRIPT_DIR/tools/telegram-bot/agent_telegram_bot.py" "$HIVE_DIR/"
 
-# Create default config if not exists
 if [ ! -f "$HIVE_DIR/telegram_config.json" ]; then
     cat > "$HIVE_DIR/telegram_config.json" << 'EOF'
 {
@@ -92,7 +83,7 @@ if [ ! -f "$HIVE_DIR/telegram_config.json" ]; then
 EOF
 fi
 
-# Create venv + install deps
+# Venv for the bot service
 if [ ! -d "$HIVE_DIR/venv" ]; then
     python3 -m venv "$HIVE_DIR/venv"
     "$HIVE_DIR/venv/bin/pip" install -q python-telegram-bot aiofiles
@@ -101,18 +92,16 @@ else
     echo -e "${YELLOW}[SKIP]${NC} Python venv exists"
 fi
 
-# Install systemd service
 cp "$SCRIPT_DIR/tools/telegram-bot/agent-telegram-bot.service" /etc/systemd/system/
 systemctl daemon-reload
 
 echo ""
-echo "The Telegram bot will be shared with all workers for notifications."
+echo "The Telegram bot will be shared with all workers."
 echo ""
-bash "$HIVE_DIR/tools/telegram-bot/tgsetup"
+bash "$SCRIPT_DIR/tools/telegram-bot/tgsetup"
 
 # ---- Done ----
 
-echo -e "${BLUE}[4/4]${NC} Done!"
 echo ""
 echo -e "${CYAN}"
 echo "========================================"

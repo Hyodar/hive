@@ -4,14 +4,15 @@
 
 set -e
 
-# Resolve HIVE_TOOLS: installed location or repo-local
-if [ -d "/etc/agent-setup/tools" ]; then
-    HIVE_DIR="/etc/agent-setup"
+HIVE_DIR="/etc/agent-setup"
+
+# Resolve HIVE_TOOLS: installed location > .source_repo > repo-local
+if [ -d "$HIVE_DIR/tools" ]; then
     HIVE_TOOLS="$HIVE_DIR/tools"
+elif [ -f "$HIVE_DIR/.source_repo" ]; then
+    HIVE_TOOLS="$(cat "$HIVE_DIR/.source_repo")/tools"
 else
-    # Running from repo checkout directly
     HIVE_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools"
-    HIVE_DIR="/etc/agent-setup"
 fi
 
 export HIVE_DIR HIVE_TOOLS
