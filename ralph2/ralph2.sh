@@ -434,7 +434,7 @@ for i in $(seq 1 $MAX_ITERATIONS); do
             OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
             ;;
         codex)
-            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
             ;;
     esac
 
