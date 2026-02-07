@@ -301,6 +301,7 @@ mkdir -p "$CONFIG_DIR/tools"
 mkdir -p "$CONFIG_DIR/pending_prompts"
 mkdir -p "$CONFIG_DIR/ralph2/skills/prd"
 mkdir -p "$CONFIG_DIR/ralph2/skills/ralph"
+mkdir -p "$CONFIG_DIR/ralph2/skills/ralph-tasks"
 
 # Install hive (needed for repo receive)
 cp -r "$SCRIPT_DIR/tools/hive" "$CONFIG_DIR/tools/"
@@ -323,13 +324,40 @@ cat > "$BIN_DIR/ralph2" << EOF
 #!/bin/bash
 exec "$CONFIG_DIR/ralph2/ralph2.sh" "\$@"
 EOF
-cp "$SCRIPT_DIR/tools/ralph2/ralphsetup" "$BIN_DIR/ralphsetup"
+cp "$SCRIPT_DIR/tools/ralph2/prd" "$BIN_DIR/prd"
 cp "$SCRIPT_DIR/tools/telegram-bot/alertme" "$BIN_DIR/alertme"
 cp "$SCRIPT_DIR/tools/telegram-bot/promptme" "$BIN_DIR/promptme"
 cp "$SCRIPT_DIR/tools/telegram-bot/tgsetup" "$BIN_DIR/tgsetup"
 cp "$SCRIPT_DIR/tools/codex-account/codex-account" "$BIN_DIR/codex-account"
 cp "$SCRIPT_DIR/tools/claude-account/claude-account" "$BIN_DIR/claude-account"
-chmod +x "$BIN_DIR/ralph2" "$BIN_DIR/ralphsetup" "$BIN_DIR/alertme" "$BIN_DIR/promptme" "$BIN_DIR/tgsetup" "$BIN_DIR/codex-account" "$BIN_DIR/claude-account"
+chmod +x "$BIN_DIR/ralph2" "$BIN_DIR/prd" "$BIN_DIR/alertme" "$BIN_DIR/promptme" "$BIN_DIR/tgsetup" "$BIN_DIR/codex-account" "$BIN_DIR/claude-account"
+
+# Install skills globally for all AI tools
+log_info "Installing skills globally for all AI tools..."
+
+# Get the worker user's home directory
+WORKER_HOME=$(getent passwd worker | cut -d: -f6)
+
+# Amp skills -> ~/.config/amp/skills/
+AMP_SKILLS_DIR="$WORKER_HOME/.config/amp/skills"
+mkdir -p "$AMP_SKILLS_DIR"
+cp -r "$CONFIG_DIR/ralph2/skills/"* "$AMP_SKILLS_DIR/"
+chown -R worker:worker "$WORKER_HOME/.config/amp" 2>/dev/null || true
+log_success "Amp skills -> $AMP_SKILLS_DIR"
+
+# Claude Code skills -> ~/.claude/skills/
+CLAUDE_SKILLS_DIR="$WORKER_HOME/.claude/skills"
+mkdir -p "$CLAUDE_SKILLS_DIR"
+cp -r "$CONFIG_DIR/ralph2/skills/"* "$CLAUDE_SKILLS_DIR/"
+chown -R worker:worker "$WORKER_HOME/.claude" 2>/dev/null || true
+log_success "Claude skills -> $CLAUDE_SKILLS_DIR"
+
+# Codex: no native skill system, but install to ~/.codex/skills/ for reference
+CODEX_SKILLS_DIR="$WORKER_HOME/.codex/skills"
+mkdir -p "$CODEX_SKILLS_DIR"
+cp -r "$CONFIG_DIR/ralph2/skills/"* "$CODEX_SKILLS_DIR/"
+chown -R worker:worker "$WORKER_HOME/.codex" 2>/dev/null || true
+log_success "Codex skills -> $CODEX_SKILLS_DIR"
 
 # Telegram bot service
 cp "$SCRIPT_DIR/tools/telegram-bot/agent_telegram_bot.py" "$CONFIG_DIR/"

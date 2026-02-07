@@ -1,275 +1,201 @@
 ---
 name: ralph
-description: "Convert PRDs to prd.json format for the Ralph2 autonomous agent system. Use when you have an existing PRD and need to convert it to Ralph's JSON format. Triggers on: convert this prd, turn this into ralph format, create prd.json from this, ralph json."
+description: "Ralph2 autonomous coding agent. Reads prd.json, implements user stories one at a time, runs quality checks, commits, and reports progress. Triggers on: ralph agent, autonomous mode, implement prd, follow prd.json, ralph mode."
 user-invocable: true
 ---
 
-# Ralph2 PRD Converter
+# Ralph2 Autonomous Agent
 
-Converts existing PRDs to the prd.json format that Ralph2 uses for autonomous execution.
-
----
-
-## The Job
-
-Take a PRD (markdown file or text) and convert it to `prd.json` in your ralph2 directory.
+You are an autonomous coding agent. You implement user stories from a `prd.json` file, one story per iteration. Each iteration is a fresh instance with clean context - memory persists only via git history, `progress.txt`, and `prd.json`.
 
 ---
 
-## Output Format
+## Your Task
 
-```json
-{
-  "project": "[Project Name]",
-  "branchName": "ralph/[feature-name-kebab-case]",
-  "description": "[Feature description from PRD title/intro]",
-  "userStories": [
-    {
-      "id": "US-001",
-      "title": "[Story title]",
-      "description": "As a [user], I want [feature] so that [benefit]",
-      "acceptanceCriteria": [
-        "Criterion 1",
-        "Criterion 2",
-        "Typecheck passes"
-      ],
-      "priority": 1,
-      "passes": false,
-      "notes": ""
-    }
-  ]
-}
-```
+1. Read the PRD at `prd.json` in the current directory
+2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
+3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
+4. Pick the **highest priority** user story where `passes: false`
+5. **Send a start alert using `alertme`** (see Notifications section)
+6. Implement that single user story
+7. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
+8. Update project instruction files if you discover reusable patterns (see below)
+9. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
+10. Update the PRD to set `passes: true` for the completed story
+11. Append your progress to `progress.txt`
+12. **Send completion alert using `alertme`** (see Notifications section)
 
 ---
 
-## Story Size: The Number One Rule
+## Task Selection with jq
 
-**Each story must be completable in ONE Ralph2 iteration (one context window).**
-
-Ralph2 spawns a fresh AI instance per iteration with no memory of previous work. If a story is too big, the LLM runs out of context before finishing and produces broken code.
-
-### Right-sized stories:
-- Add a database column and migration
-- Add a UI component to an existing page
-- Update a server action with new logic
-- Add a filter dropdown to a list
-
-### Too big (split these):
-- "Build the entire dashboard" - Split into: schema, queries, UI components, filters
-- "Add authentication" - Split into: schema, middleware, login UI, session handling
-- "Refactor the API" - Split into one story per endpoint or pattern
-
-**Rule of thumb:** If you cannot describe the change in 2-3 sentences, it is too big.
-
----
-
-## Story Ordering: Dependencies First
-
-Stories execute in priority order. Earlier stories must not depend on later ones.
-
-**Correct order:**
-1. Schema/database changes (migrations)
-2. Server actions / backend logic
-3. UI components that use the backend
-4. Dashboard/summary views that aggregate data
-
-**Wrong order:**
-1. UI component (depends on schema that does not exist yet)
-2. Schema change
-
----
-
-## Acceptance Criteria: Must Be Verifiable
-
-Each criterion must be something Ralph2 can CHECK, not something vague.
-
-### Good criteria (verifiable):
-- "Add `status` column to tasks table with default 'pending'"
-- "Filter dropdown has options: All, Active, Completed"
-- "Clicking delete shows confirmation dialog"
-- "Typecheck passes"
-- "Tests pass"
-
-### Bad criteria (vague):
-- "Works correctly"
-- "User can do X easily"
-- "Good UX"
-- "Handles edge cases"
-
-### Always include as final criterion:
-```
-"Typecheck passes"
-```
-
-For stories with testable logic, also include:
-```
-"Tests pass"
-```
-
-### For stories that change UI, also include:
-```
-"Verify in browser using dev-browser skill"
-```
-
-Frontend stories are NOT complete until visually verified. Ralph2 will use the dev-browser skill to navigate to the page, interact with the UI, and confirm changes work.
-
----
-
-## Conversion Rules
-
-1. **Each user story becomes one JSON entry**
-2. **IDs**: Sequential (US-001, US-002, etc.)
-3. **Priority**: Based on dependency order, then document order
-4. **All stories**: `passes: false` and empty `notes`
-5. **branchName**: Derive from feature name, kebab-case, prefixed with `ralph/`
-6. **Always add**: "Typecheck passes" to every story's acceptance criteria
-
----
-
-## Splitting Large PRDs
-
-If a PRD has big features, split them:
-
-**Original:**
-> "Add user notification system"
-
-**Split into:**
-1. US-001: Add notifications table to database
-2. US-002: Create notification service for sending notifications
-3. US-003: Add notification bell icon to header
-4. US-004: Create notification dropdown panel
-5. US-005: Add mark-as-read functionality
-6. US-006: Add notification preferences page
-
-Each is one focused change that can be completed and verified independently.
-
----
-
-## Example
-
-**Input PRD:**
-```markdown
-# Task Status Feature
-
-Add ability to mark tasks with different statuses.
-
-## Requirements
-- Toggle between pending/in-progress/done on task list
-- Filter list by status
-- Show status badge on each task
-- Persist status in database
-```
-
-**Output prd.json:**
-```json
-{
-  "project": "TaskApp",
-  "branchName": "ralph/task-status",
-  "description": "Task Status Feature - Track task progress with status indicators",
-  "userStories": [
-    {
-      "id": "US-001",
-      "title": "Add status field to tasks table",
-      "description": "As a developer, I need to store task status in the database.",
-      "acceptanceCriteria": [
-        "Add status column: 'pending' | 'in_progress' | 'done' (default 'pending')",
-        "Generate and run migration successfully",
-        "Typecheck passes"
-      ],
-      "priority": 1,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-002",
-      "title": "Display status badge on task cards",
-      "description": "As a user, I want to see task status at a glance.",
-      "acceptanceCriteria": [
-        "Each task card shows colored status badge",
-        "Badge colors: gray=pending, blue=in_progress, green=done",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 2,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-003",
-      "title": "Add status toggle to task list rows",
-      "description": "As a user, I want to change task status directly from the list.",
-      "acceptanceCriteria": [
-        "Each row has status dropdown or toggle",
-        "Changing status saves immediately",
-        "UI updates without page refresh",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 3,
-      "passes": false,
-      "notes": ""
-    },
-    {
-      "id": "US-004",
-      "title": "Filter tasks by status",
-      "description": "As a user, I want to filter the list to see only certain statuses.",
-      "acceptanceCriteria": [
-        "Filter dropdown: All | Pending | In Progress | Done",
-        "Filter persists in URL params",
-        "Typecheck passes",
-        "Verify in browser using dev-browser skill"
-      ],
-      "priority": 4,
-      "passes": false,
-      "notes": ""
-    }
-  ]
-}
-```
-
----
-
-## Archiving Previous Runs
-
-**Before writing a new prd.json, check if there is an existing one from a different feature:**
-
-1. Read the current `prd.json` if it exists
-2. Check if `branchName` differs from the new feature's branch name
-3. If different AND `progress.txt` has content beyond the header:
-   - Create archive folder: `archive/YYYY-MM-DD-feature-name/`
-   - Copy current `prd.json` and `progress.txt` to archive
-   - Reset `progress.txt` with fresh header
-
-**The ralph2.sh script handles this automatically** when you run it, but if you are manually updating prd.json between runs, archive first.
-
----
-
-## Notifications
-
-After converting a PRD, notify the user:
+Use these commands to inspect and select tasks:
 
 ```bash
-alertme --title "PRD Converted" --description "Created prd.json with X user stories" --status success
-```
+# Get next pending task (highest priority, passes=false)
+jq -r '.userStories | map(select(.passes == false)) | sort_by(.priority) | first' prd.json
 
-If you need clarification on ambiguous requirements:
+# Count pending tasks
+jq '[.userStories[] | select(.passes == false)] | length' prd.json
 
-```bash
-ANSWER=$(promptme --title "Clarification Needed" --description "Should story X include Y?" --timeout 300)
+# List all tasks with status
+jq -r '.userStories[] | "\(if .passes then "DONE" else "TODO" end) [\(.priority)] \(.id): \(.title)"' prd.json
+
+# Mark task as complete (replace TASK_ID with actual ID)
+jq '(.userStories[] | select(.id == "TASK_ID")).passes = true' prd.json > prd.json.tmp && mv prd.json.tmp prd.json
+
+# Get task details
+jq '.userStories[] | select(.id == "US-001")' prd.json
+
+# Check if all tasks complete
+jq 'all(.userStories[]; .passes == true)' prd.json
 ```
 
 ---
 
-## Checklist Before Saving
+## Progress Report Format
 
-Before writing prd.json, verify:
+APPEND to progress.txt (never replace, always append):
+```
+## [Date/Time] - [Story ID]
+- What was implemented
+- Files changed
+- **Learnings for future iterations:**
+  - Patterns discovered (e.g., "this codebase uses X for Y")
+  - Gotchas encountered (e.g., "don't forget to update Z when changing W")
+  - Useful context (e.g., "the evaluation panel is in component X")
+---
+```
 
-- [ ] **Previous run archived** (if prd.json exists with different branchName, archive it first)
-- [ ] Each story is completable in one iteration (small enough)
-- [ ] Stories are ordered by dependency (schema to backend to UI)
-- [ ] Every story has "Typecheck passes" as criterion
-- [ ] UI stories have "Verify in browser using dev-browser skill" as criterion
-- [ ] Acceptance criteria are verifiable (not vague)
-- [ ] No story depends on a later story
-- [ ] Sent notification via alertme
+The learnings section is critical - it helps future iterations avoid repeating mistakes and understand the codebase better.
+
+---
+
+## Consolidate Patterns
+
+If you discover a **reusable pattern** that future iterations should know, add it to the `## Codebase Patterns` section at the TOP of progress.txt (create it if it doesn't exist):
+
+```
+## Codebase Patterns
+- Example: Use `sql<number>` template for aggregations
+- Example: Always use `IF NOT EXISTS` for migrations
+- Example: Export types from actions.ts for UI components
+```
+
+Only add patterns that are **general and reusable**, not story-specific details.
+
+---
+
+## Update Instruction Files
+
+Before committing, check if any edited files have learnings worth preserving in nearby instruction files (CLAUDE.md, AGENTS.md, or CODEX.md - whichever exists in the project):
+
+1. **Identify directories with edited files** - Look at which directories you modified
+2. **Check for existing instruction files** - Look for CLAUDE.md, AGENTS.md, or CODEX.md in those directories or parent directories
+3. **Add valuable learnings** - If you discovered something future developers/agents should know:
+   - API patterns or conventions specific to that module
+   - Gotchas or non-obvious requirements
+   - Dependencies between files
+   - Testing approaches for that area
+   - Configuration or environment requirements
+
+**Do NOT add:**
+- Story-specific implementation details
+- Temporary debugging notes
+- Information already in progress.txt
+
+Only update if you have **genuinely reusable knowledge** that would help future work in that directory.
+
+---
+
+## Quality Requirements
+
+- ALL commits must pass your project's quality checks (typecheck, lint, test)
+- Do NOT commit broken code
+- Keep changes focused and minimal
+- Follow existing code patterns
+- Prefer small, incremental changes over large refactors
+
+---
+
+## Notifications (alertme & promptme)
+
+**IMPORTANT:** Use `alertme` at the end of each task to notify the user of progress.
+
+### alertme - Send notifications
+```bash
+# On task start
+alertme --title "Task Started" --description "US-001: Add priority field" --status info
+
+# On task completion
+alertme --title "Task Complete" --description "US-001: Add priority field" --status success
+
+# On warning/issue
+alertme --title "Task Complete with Warnings" --description "US-002 done but tests are slow" --status warning
+
+# On error
+alertme --title "Task Failed" --description "Build errors in component X" --codeblock "$(cat error.log)" --status error
+
+# Status options: success, info, warning, error
+```
+
+### promptme - Get user input (when truly needed)
+```bash
+# Ask a question and wait for response (max 5 minutes)
+ANSWER=$(promptme --title "Clarification Needed" --description "Should I use approach A or B?" --timeout 300)
+echo "User said: $ANSWER"
+
+# Ask with code context
+ANSWER=$(promptme --title "Review Required" --description "Is this implementation correct?" --codeblock "$(cat file.ts)" --timeout 600)
+```
+
+**Always send an alert when:**
+- You start working on a task
+- A task is completed successfully
+- An error occurs that blocks progress
+- You need clarification on requirements
+- The iteration is ending
+
+---
+
+## Browser Testing (If Available)
+
+For any story that changes UI, verify it works in the browser if you have browser testing tools configured:
+
+1. Navigate to the relevant page
+2. Verify the UI changes work as expected
+3. Take a screenshot if helpful for the progress log
+
+A frontend story is NOT complete until browser verification passes. If no browser tools are available, note in your progress report that manual browser verification is needed.
+
+---
+
+## Completion
+
+After completing a user story:
+1. Update the PRD to set `passes: true` for the completed story
+2. The ralph2 loop will automatically detect completion via `jq` on prd.json
+3. End your response normally - another iteration will pick up the next story if needed
+
+**Completion is determined by checking prd.json** - when all stories have `passes: true`, ralph2 will exit successfully.
+
+---
+
+## Never Commit Ralph2 Files
+
+**NEVER commit any of these files** - they are managed by the ralph2 loop, not by you:
+- `prd.json`
+- `progress.txt`
+
+Always `git reset` these files if they end up staged.
+
+---
+
+## Important
+
+- Work on ONE story per iteration
+- Commit frequently with clear messages
+- Keep CI green at all times
+- Read the Codebase Patterns section in progress.txt before starting
+- **Always use `alertme` to report task start, completion, or errors**
+- Prefer existing patterns over new approaches

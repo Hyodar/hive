@@ -1,0 +1,111 @@
+#!/bin/bash
+# prd - Create a PRD and convert to prd.json using AI tools
+#
+# Launches an AI tool interactively to:
+#   1. Create a PRD using the prd skill
+#   2. Convert it to prd.json using the ralph-tasks skill
+#
+# Usage: prd [--tool <claude|codex|amp>]
+
+set -e
+
+SKILLS_DIR="${HIVE_SKILLS_DIR:-/etc/hive/ralph2/skills}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Defaults
+TOOL="claude"
+
+usage() {
+    echo "prd - Create a PRD and convert to prd.json"
+    echo ""
+    echo "Usage: prd [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --tool <name>     AI tool: claude, codex, amp (default: claude)"
+    echo "  --help, -h        Show this help"
+    echo ""
+    echo "Examples:"
+    echo "  prd                      # Use Claude Code"
+    echo "  prd --tool codex         # Use Codex"
+    echo "  prd --tool amp           # Use Amp"
+    echo ""
+    echo "The tool will ask you to describe your feature, create a PRD,"
+    echo "then convert it to prd.json for Ralph2."
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h)
+            usage
+            ;;
+        --tool)
+            TOOL="$2"
+            shift 2
+            ;;
+        --tool=*)
+            TOOL="${1#*=}"
+            shift
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown argument: $1${NC}"
+            echo "Use --help for usage"
+            exit 1
+            ;;
+    esac
+done
+
+# Validate tool
+if [[ "$TOOL" != "claude" && "$TOOL" != "codex" && "$TOOL" != "amp" ]]; then
+    echo -e "${RED}Error: Invalid tool '$TOOL'. Must be: claude, codex, amp${NC}"
+    exit 1
+fi
+
+# Check skills exist
+if [ ! -f "$SKILLS_DIR/prd/SKILL.md" ]; then
+    echo -e "${RED}Error: prd skill not found at $SKILLS_DIR/prd/SKILL.md${NC}"
+    echo "Run 'hive worker setup' or install skills manually"
+    exit 1
+fi
+
+if [ ! -f "$SKILLS_DIR/ralph-tasks/SKILL.md" ]; then
+    echo -e "${RED}Error: ralph-tasks skill not found at $SKILLS_DIR/ralph-tasks/SKILL.md${NC}"
+    echo "Run 'hive worker setup' or install skills manually"
+    exit 1
+fi
+
+PROMPT="Read and follow the skill instructions in $SKILLS_DIR/prd/SKILL.md — you are now the PRD generator described there.
+
+Create a PRD for the feature description I will mention in the next message.
+
+After the PRD is created, read $SKILLS_DIR/ralph-tasks/SKILL.md and follow those instructions to convert the PRD into prd.json in the current directory."
+
+echo ""
+echo -e "${CYAN}========================================"
+echo -e "  PRD Creator (using $TOOL)"
+echo -e "========================================${NC}"
+echo ""
+echo -e "Describe your feature and the tool will:"
+echo -e "  ${GREEN}1.${NC} Ask clarifying questions"
+echo -e "  ${GREEN}2.${NC} Generate a PRD in tasks/"
+echo -e "  ${GREEN}3.${NC} Convert to prd.json for Ralph2"
+echo ""
+
+case "$TOOL" in
+    claude)
+        exec claude --dangerously-skip-permissions -p "$PROMPT"
+        ;;
+    codex)
+        exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" "$PROMPT"
+        ;;
+    amp)
+        echo "$PROMPT" | exec amp --dangerously-allow-all
+        ;;
+esac
