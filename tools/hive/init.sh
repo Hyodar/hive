@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="/usr/local/bin"
 CONFIG_FILE="$HIVE_DIR/config.json"
 WORKERS_FILE="$HIVE_DIR/workers.json"
+REPOS_FILE="$HIVE_DIR/repos.json"
 
 # Colors
 RED='\033[0;31m'
@@ -64,6 +65,14 @@ if [ ! -f "$WORKERS_FILE" ]; then
 else
     WORKER_COUNT=$(jq '.workers | length' "$WORKERS_FILE")
     echo -e "${YELLOW}[SKIP]${NC} Workers registry exists ($WORKER_COUNT workers)"
+fi
+
+if [ ! -f "$REPOS_FILE" ]; then
+    echo '{"repos":{}}' | jq '.' > "$REPOS_FILE"
+    echo -e "${GREEN}[OK]${NC} Repos registry created"
+else
+    REPO_COUNT=$(jq '.repos | length' "$REPOS_FILE")
+    echo -e "${YELLOW}[SKIP]${NC} Repos registry exists ($REPO_COUNT repos)"
 fi
 
 # ---- Telegram bot ----

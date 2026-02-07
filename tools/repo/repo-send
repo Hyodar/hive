@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Source registry functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/repo-registry.sh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -76,7 +80,10 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo -e "${RED}Error: not in a git repository${NC}"
     exit 1
 }
-REPO_NAME=$(basename "$REPO_ROOT")
+
+# Resolve registered repo name (auto-registers on first use, handles collisions)
+resolve_repo_name "$REPO_ROOT"
+REPO_NAME="$REPO_REGISTERED_NAME"
 
 # Default to current branch
 if [ -z "$BRANCH" ]; then
@@ -107,10 +114,12 @@ BRANCH_TIP=$(git rev-parse "$BRANCH")
 BUNDLE_FILE=$(mktemp "/tmp/${REPO_NAME}-XXXXXX.bundle")
 trap "rm -f '$BUNDLE_FILE'" EXIT
 
+echo -e "${BLUE}Repo:${NC} ${REPO_NAME} (${REPO_ROOT})"
+
 if [ "$FULL" = false ] && [ -f "$STATE_FILE" ]; then
     LAST_COMMIT=$(cat "$STATE_FILE")
     if [ "$LAST_COMMIT" = "$BRANCH_TIP" ]; then
-        echo -e "${YELLOW}Branch '$BRANCH' is unchanged since last send. Nothing to do.${NC}"
+        echo -e "${YELLOW}[$REPO_NAME] Branch '$BRANCH' is unchanged since last send. Nothing to do.${NC}"
         exit 0
     fi
     if git merge-base --is-ancestor "$LAST_COMMIT" "$BRANCH" 2>/dev/null; then
@@ -147,4 +156,4 @@ mkdir -p "$(dirname "$STATE_FILE")"
 echo "$BRANCH_TIP" > "$STATE_FILE"
 
 DISPLAY_PATH="${REMOTE_PATH:-"<default>/$REPO_NAME"}"
-echo -e "${GREEN}Sent '$BRANCH' ($BRANCH_TIP) to $HOST:$DISPLAY_PATH${NC}"
+echo -e "${GREEN}[$REPO_NAME] Sent '$BRANCH' ($BRANCH_TIP) to $HOST:$DISPLAY_PATH${NC}"

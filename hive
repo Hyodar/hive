@@ -54,6 +54,11 @@ show_help() {
     echo "  worker rm <name>                  Remove a worker from registry"
     echo "  worker ssh <name>                 SSH into a worker"
     echo ""
+    echo -e "${BLUE}Repo registry:${NC}"
+    echo "  repo add [name]                   Register current repo (default: dir name)"
+    echo "  repo ls                           List registered repos"
+    echo "  repo rm <name>                    Remove a repo from registry"
+    echo ""
     echo -e "${BLUE}Repo transfer:${NC}"
     echo "  repo send <worker> [branch]       Send current repo to a worker"
     echo "  repo fetch <worker> [branch]      Fetch a repo from a worker"
@@ -78,6 +83,9 @@ case "$CMD" in
         SUBCMD="${1:-}"
         shift 2>/dev/null || true
         case "$SUBCMD" in
+            add|ls|list|rm|remove)
+                exec bash "$HIVE_TOOLS/repo/repo-registry.sh" "$SUBCMD" "$@"
+                ;;
             send|fetch)
                 # Resolve first positional arg (worker name) to SSH host
                 RESOLVED_ARGS=()
@@ -115,7 +123,10 @@ case "$CMD" in
                 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
                     echo -e "${RED}Error: not in a git repository${NC}"; exit 1
                 }
-                REPO_NAME=$(basename "$REPO_ROOT")
+                # Resolve registered repo name for remote path
+                source "$HIVE_TOOLS/repo/repo-registry.sh"
+                resolve_repo_name "$REPO_ROOT"
+                REPO_NAME="$REPO_REGISTERED_NAME"
                 REMOTE_BASE=$(ssh "$SSH_HOST" bash -c "'
                     BP=\$HOME
                     CFG=\$HOME/.repo-transfer/config
@@ -126,11 +137,26 @@ case "$CMD" in
                     fi
                     echo \"\$BP\"
                 '") || REMOTE_BASE="~"
-                echo -e "${BLUE}Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
+                echo -e "${BLUE}[$REPO_NAME] Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
                 exec ssh -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
                 ;;
+            help|--help|-h)
+                echo "Usage: hive repo <command>"
+                echo ""
+                echo "Registry:"
+                echo "  add [name]                  Register current repo (default: dir name)"
+                echo "  ls                          List registered repos"
+                echo "  rm <name>                   Remove a repo from registry"
+                echo ""
+                echo "Transfer:"
+                echo "  send <worker> [branch]      Send repo to a worker"
+                echo "  fetch <worker> [branch]     Fetch repo from a worker"
+                echo "  ssh <worker>                SSH into worker at repo directory"
+                exit 0
+                ;;
             *)
-                echo "Usage: hive repo <send|fetch|ssh>"
+                echo -e "${RED}Unknown repo command: ${SUBCMD:-<none>}${NC}"
+                echo "Run 'hive repo help' for usage"
                 exit 1
                 ;;
         esac

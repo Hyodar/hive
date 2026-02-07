@@ -10,6 +10,10 @@
 
 set -euo pipefail
 
+# Source registry functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/repo-registry.sh"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -76,7 +80,10 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo -e "${RED}Error: not in a git repository${NC}"
     exit 1
 }
-REPO_NAME=$(basename "$REPO_ROOT")
+
+# Resolve registered repo name (auto-registers on first use, handles collisions)
+resolve_repo_name "$REPO_ROOT"
+REPO_NAME="$REPO_REGISTERED_NAME"
 
 # Default to current branch
 if [ -z "$BRANCH" ]; then
@@ -89,6 +96,8 @@ if [ -z "$BRANCH" ]; then
         exit 1
     fi
 fi
+
+echo -e "${BLUE}Repo:${NC} ${REPO_NAME} (${REPO_ROOT})"
 
 # Resolve remote path: use -p if given, otherwise read remote config
 if [ -z "$REMOTE_PATH" ]; then
@@ -232,4 +241,4 @@ else
 fi
 
 NEW_TIP=$(git rev-parse "$BRANCH")
-echo -e "${GREEN}Fetched '$BRANCH' ($NEW_TIP) from $HOST:$REMOTE_PATH${NC}"
+echo -e "${GREEN}[$REPO_NAME] Fetched '$BRANCH' ($NEW_TIP) from $HOST:$REMOTE_PATH${NC}"
