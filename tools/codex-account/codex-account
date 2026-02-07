@@ -47,9 +47,11 @@ cmd_setup() {
     echo "Setting up Codex account \"$name\"..."
     echo ""
 
-    # Logout current session
-    echo "Logging out of current Codex session..."
-    codex auth logout 2>/dev/null || true
+    # Logout current session if one exists
+    if [[ -f "$AUTH_FILE" || -L "$AUTH_FILE" ]]; then
+        echo "Logging out of current Codex session..."
+        codex auth logout 2>/dev/null || true
+    fi
 
     # Login to new account
     echo "Starting Codex login..."

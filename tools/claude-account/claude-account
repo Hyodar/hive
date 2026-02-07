@@ -60,9 +60,11 @@ cmd_setup() {
     echo "Setting up Claude account \"$name\"..."
     echo ""
 
-    # Logout current session
-    echo "Logging out of current Claude session..."
-    claude /logout 2>/dev/null || true
+    # Logout current session if one exists
+    if [[ -f "$CREDENTIALS_FILE" || -L "$CREDENTIALS_FILE" ]]; then
+        echo "Logging out of current Claude session..."
+        claude /logout 2>/dev/null || true
+    fi
 
     # Login to new account
     echo "Starting Claude login..."
