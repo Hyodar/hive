@@ -39,6 +39,26 @@ get_current() {
     echo ""
 }
 
+cmd_setup() {
+    [[ $# -lt 1 ]] && die "Usage: codex-account setup <name>"
+    local name
+    name=$(validate_name "$1")
+
+    echo "Setting up Codex account \"$name\"..."
+    echo ""
+
+    # Logout current session
+    echo "Logging out of current Codex session..."
+    codex auth logout 2>/dev/null || true
+
+    # Login to new account
+    echo "Starting Codex login..."
+    codex auth login || die "Login failed or was cancelled."
+
+    # Save the new credentials
+    cmd_save "$name"
+}
+
 cmd_save() {
     [[ $# -lt 1 ]] && die "Usage: codex-account save <name>"
     local name
@@ -144,6 +164,7 @@ show_help() {
     echo "Usage: codex-account <command> [args]"
     echo ""
     echo "Commands:"
+    echo "  setup <name>   Logout, login, and save as a named account"
     echo "  save <name>    Save current ~/.codex/auth.json as a named account"
     echo "  use [name]     Switch to a named account (interactive if no name given)"
     echo "  list           List all saved accounts (* = active)"
@@ -152,6 +173,7 @@ show_help() {
 }
 
 case "${1:-help}" in
+    setup)   shift; cmd_setup "$@" ;;
     save)    shift; cmd_save "$@" ;;
     use)     shift; cmd_use "$@" ;;
     list|ls) cmd_list ;;

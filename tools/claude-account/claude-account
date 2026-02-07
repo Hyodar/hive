@@ -51,6 +51,27 @@ get_account_email() {
     fi
 }
 
+cmd_setup() {
+    [[ $# -lt 1 ]] && die "Usage: claude-account setup <name>"
+    local name
+    name=$(validate_name "$1")
+    check_jq
+
+    echo "Setting up Claude account \"$name\"..."
+    echo ""
+
+    # Logout current session
+    echo "Logging out of current Claude session..."
+    claude /logout 2>/dev/null || true
+
+    # Login to new account
+    echo "Starting Claude login..."
+    claude /login || die "Login failed or was cancelled."
+
+    # Save the new credentials
+    cmd_save "$name"
+}
+
 cmd_save() {
     [[ $# -lt 1 ]] && die "Usage: claude-account save <name>"
     local name
@@ -215,6 +236,7 @@ show_help() {
     echo "Usage: claude-account <command> [args]"
     echo ""
     echo "Commands:"
+    echo "  setup <name>   Logout, login, and save as a named account"
     echo "  save <name>    Save current Claude Code auth as a named account"
     echo "  use [name]     Switch to a named account (interactive if no name given)"
     echo "  list           List all saved accounts (* = active)"
@@ -223,6 +245,7 @@ show_help() {
 }
 
 case "${1:-help}" in
+    setup)   shift; cmd_setup "$@" ;;
     save)    shift; cmd_save "$@" ;;
     use)     shift; cmd_use "$@" ;;
     list|ls) cmd_list ;;
