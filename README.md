@@ -88,8 +88,8 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | **AI Agents** | `xclaude` | `claude --dangerously-skip-permissions` |
 | | `xcodex` | `codex --dangerously-bypass-approvals-and-sandbox` |
 | | `xamp` | `amp --dangerously-allow-all` |
-| **Orchestration** | `ralph2` | Autonomous agent loop (Claude, Codex, Amp) |
-| | `prd` | Create a PRD and convert to prd.json interactively |
+| **Orchestration** | `ralph2` | Autonomous agent loop — reads `prd.json` from CWD, loads ralph skill globally |
+| | `prd --tool <claude\|codex\|amp>` | Create a PRD and convert to `prd.json` interactively |
 | **Notifications** | `alertme` | Send a one-way Telegram alert |
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
