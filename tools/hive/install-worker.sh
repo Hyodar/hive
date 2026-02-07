@@ -255,7 +255,9 @@ cp "$SCRIPT_DIR/tools/ralph2/ralphsetup" "$BIN_DIR/ralphsetup"
 cp "$SCRIPT_DIR/tools/telegram-bot/alertme" "$BIN_DIR/alertme"
 cp "$SCRIPT_DIR/tools/telegram-bot/promptme" "$BIN_DIR/promptme"
 cp "$SCRIPT_DIR/tools/telegram-bot/tgsetup" "$BIN_DIR/tgsetup"
-chmod +x "$BIN_DIR/ralph2" "$BIN_DIR/ralphsetup" "$BIN_DIR/alertme" "$BIN_DIR/promptme" "$BIN_DIR/tgsetup"
+cp "$SCRIPT_DIR/tools/codex-account/codex-account" "$BIN_DIR/codex-account"
+cp "$SCRIPT_DIR/tools/claude-account/claude-account" "$BIN_DIR/claude-account"
+chmod +x "$BIN_DIR/ralph2" "$BIN_DIR/ralphsetup" "$BIN_DIR/alertme" "$BIN_DIR/promptme" "$BIN_DIR/tgsetup" "$BIN_DIR/codex-account" "$BIN_DIR/claude-account"
 
 # Telegram bot service
 cp "$SCRIPT_DIR/tools/telegram-bot/agent_telegram_bot.py" "$CONFIG_DIR/"

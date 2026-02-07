@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+# claude-account - Manage and switch between multiple Claude Code accounts
+# Inspired by https://github.com/ming86/cc-account-switcher
+# Linux-only. Same API as codex-account.
+
+set -euo pipefail
+
+CLAUDE_DIR="$HOME/.claude"
+ACCOUNTS_DIR="$CLAUDE_DIR/accounts"
+CURRENT_FILE="$ACCOUNTS_DIR/current"
+CREDENTIALS_FILE="$CLAUDE_DIR/.credentials.json"
+ACCOUNT_NAME_PATTERN='^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+check_jq() {
+    command -v jq >/dev/null 2>&1 || die "jq is required. Install with: sudo apt install jq"
+}
+
+# Claude config can be in two places
+get_config_path() {
+    if [[ -f "$CLAUDE_DIR/.claude.json" ]]; then
+        echo "$CLAUDE_DIR/.claude.json"
+    else
+        echo "$HOME/.claude.json"
+    fi
+}
+
+validate_name() {
+    local name="$1"
+    [[ -z "$name" ]] && die "Account name cannot be empty"
+    [[ "$name" =~ $ACCOUNT_NAME_PATTERN ]] || die "Invalid account name '$name'. Use alphanumeric, dots, dashes, underscores."
+    echo "$name"
+}
+
+get_current() {
+    if [[ -f "$CURRENT_FILE" ]]; then
+        local name
+        name=$(<"$CURRENT_FILE")
+        name="${name%$'\n'}"
+        [[ -n "$name" ]] && echo "$name" && return
+    fi
+    echo ""
+}
+
+get_account_email() {
+    local account_dir="$1"
+    local config="$account_dir/config.json"
+    if [[ -f "$config" ]] && command -v jq >/dev/null 2>&1; then
+        jq -r '.oauthAccount.emailAddress // empty' "$config" 2>/dev/null
+    fi
+}
+
+cmd_save() {
+    [[ $# -lt 1 ]] && die "Usage: claude-account save <name>"
+    local name
+    name=$(validate_name "$1")
+    check_jq
+
+    local config_path
+    config_path=$(get_config_path)
+
+    [[ -f "$CREDENTIALS_FILE" || -L "$CREDENTIALS_FILE" ]] || die "No credentials found at $CREDENTIALS_FILE. Log in to Claude Code first."
+    [[ -f "$config_path" ]] || die "No config found at $config_path. Log in to Claude Code first."
+
+    local account_dir="$ACCOUNTS_DIR/$name"
+    mkdir -p "$account_dir"
+
+    # Save credentials (resolve symlink if needed)
+    if [[ -L "$CREDENTIALS_FILE" ]]; then
+        cp "$(readlink -f "$CREDENTIALS_FILE")" "$account_dir/credentials.json"
+    else
+        cp "$CREDENTIALS_FILE" "$account_dir/credentials.json"
+    fi
+    chmod 600 "$account_dir/credentials.json"
+
+    # Save config
+    cp "$config_path" "$account_dir/config.json"
+    chmod 600 "$account_dir/config.json"
+
+    echo "$name" > "$CURRENT_FILE"
+
+    local email
+    email=$(get_account_email "$account_dir")
+    if [[ -n "$email" ]]; then
+        echo "Saved current Claude auth as \"$name\" ($email)."
+    else
+        echo "Saved current Claude auth as \"$name\"."
+    fi
+}
+
+cmd_use() {
+    local name="${1:-}"
+    check_jq
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection
+        local accounts=()
+        if [[ -d "$ACCOUNTS_DIR" ]]; then
+            while IFS= read -r -d '' d; do
+                local base
+                base=$(basename "$d")
+                [[ -f "$d/credentials.json" ]] && accounts+=("$base")
+            done < <(find "$ACCOUNTS_DIR" -maxdepth 1 -mindepth 1 -type d -print0 | sort -z)
+        fi
+        [[ ${#accounts[@]} -eq 0 ]] && die "No saved accounts. Run 'claude-account save <name>' first."
+
+        local current
+        current=$(get_current)
+
+        echo "Select account:"
+        local i=1
+        for acct in "${accounts[@]}"; do
+            local mark=" "
+            [[ "$acct" == "$current" ]] && mark="*"
+            local email
+            email=$(get_account_email "$ACCOUNTS_DIR/$acct")
+            if [[ -n "$email" ]]; then
+                echo "  $mark $i) $acct ($email)"
+            else
+                echo "  $mark $i) $acct"
+            fi
+            ((i++))
+        done
+
+        echo ""
+        read -rp "Enter number: " choice
+        [[ "$choice" =~ ^[0-9]+$ ]] || die "Invalid selection"
+        [[ "$choice" -ge 1 && "$choice" -le ${#accounts[@]} ]] || die "Selection out of range"
+        name="${accounts[$((choice - 1))]}"
+    else
+        name=$(validate_name "$name")
+    fi
+
+    local account_dir="$ACCOUNTS_DIR/$name"
+    [[ -d "$account_dir" && -f "$account_dir/credentials.json" ]] || \
+        die "Account \"$name\" not found. Run 'claude-account list' to see saved accounts."
+
+    # Restore credentials via symlink
+    rm -f "$CREDENTIALS_FILE"
+    ln -s "$(readlink -f "$account_dir/credentials.json")" "$CREDENTIALS_FILE"
+
+    # Merge oauthAccount into current config (preserves user settings)
+    local config_path
+    config_path=$(get_config_path)
+    if [[ -f "$account_dir/config.json" && -f "$config_path" ]]; then
+        local oauth
+        oauth=$(jq '.oauthAccount' "$account_dir/config.json" 2>/dev/null)
+        if [[ -n "$oauth" && "$oauth" != "null" ]]; then
+            local merged
+            merged=$(jq --argjson oauth "$oauth" '.oauthAccount = $oauth' "$config_path")
+            echo "$merged" > "$config_path"
+            chmod 600 "$config_path"
+        fi
+    elif [[ -f "$account_dir/config.json" ]]; then
+        cp "$account_dir/config.json" "$config_path"
+        chmod 600 "$config_path"
+    fi
+
+    echo "$name" > "$CURRENT_FILE"
+
+    local email
+    email=$(get_account_email "$account_dir")
+    if [[ -n "$email" ]]; then
+        echo "Switched Claude auth to \"$name\" ($email)."
+    else
+        echo "Switched Claude auth to \"$name\"."
+    fi
+}
+
+cmd_list() {
+    if [[ ! -d "$ACCOUNTS_DIR" ]]; then
+        echo "No saved Claude accounts yet. Run 'claude-account save <name>'."
+        return
+    fi
+
+    local accounts=()
+    while IFS= read -r -d '' d; do
+        local base
+        base=$(basename "$d")
+        [[ -f "$d/credentials.json" ]] && accounts+=("$base")
+    done < <(find "$ACCOUNTS_DIR" -maxdepth 1 -mindepth 1 -type d -print0 | sort -z)
+
+    [[ ${#accounts[@]} -eq 0 ]] && { echo "No saved Claude accounts yet. Run 'claude-account save <name>'."; return; }
+
+    local current
+    current=$(get_current)
+
+    for acct in "${accounts[@]}"; do
+        local mark=" "
+        [[ "$acct" == "$current" ]] && mark="*"
+        local email
+        email=$(get_account_email "$ACCOUNTS_DIR/$acct")
+        if [[ -n "$email" ]]; then
+            echo "$mark $acct ($email)"
+        else
+            echo "$mark $acct"
+        fi
+    done
+}
+
+cmd_current() {
+    local name
+    name=$(get_current)
+    if [[ -n "$name" ]]; then
+        echo "$name"
+    else
+        echo "No Claude account is active yet."
+    fi
+}
+
+show_help() {
+    echo "claude-account - Manage multiple Claude Code accounts"
+    echo ""
+    echo "Usage: claude-account <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  save <name>    Save current Claude Code auth as a named account"
+    echo "  use [name]     Switch to a named account (interactive if no name given)"
+    echo "  list           List all saved accounts (* = active)"
+    echo "  current        Show the currently active account name"
+    echo "  help           Show this help"
+}
+
+case "${1:-help}" in
+    save)    shift; cmd_save "$@" ;;
+    use)     shift; cmd_use "$@" ;;
+    list|ls) cmd_list ;;
+    current) cmd_current ;;
+    help|--help|-h) show_help ;;
+    *)       die "Unknown command '$1'. Run 'claude-account help' for usage." ;;
+esac

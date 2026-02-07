@@ -91,6 +91,45 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | **Notifications** | `alertme` | Send a one-way Telegram alert |
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
+| **Account Switching** | `codex-account` | Manage multiple Codex accounts |
+| | `claude-account` | Manage multiple Claude Code accounts |
+
+## 🔑 Account Switching
+
+Switch between multiple AI tool accounts without repeated logins. Both tools share the same CLI interface.
+
+Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher) and [cc-account-switcher](https://github.com/ming86/cc-account-switcher).
+
+```bash
+# Save your current login as a named account
+codex-account save work        # or: claude-account save work
+
+# Log out, log in with another account, then save it too
+codex-account save personal    # or: claude-account save personal
+
+# Switch between them
+codex-account use work         # or: claude-account use work
+codex-account use personal     # or: claude-account use personal
+
+# Interactive selection (no name = pick from a list)
+codex-account use              # or: claude-account use
+
+# See what's saved
+codex-account list             # or: claude-account list
+codex-account current          # or: claude-account current
+```
+
+| Command | Description |
+|---------|-------------|
+| `save <name>` | Save current auth as a named account |
+| `use [name]` | Switch to a named account (interactive if no name) |
+| `list` | List all saved accounts (`*` = active) |
+| `current` | Show the currently active account name |
+
+- **codex-account** manages `~/.codex/auth.json` snapshots in `~/.codex/accounts/`
+- **claude-account** manages `~/.claude/.credentials.json` and the `oauthAccount` section of `.claude.json`, stored in `~/.claude/accounts/`
+- Both use symlinks for switching (Linux-only)
+- `claude-account` requires `jq`
 
 ## ⚙️ Configuration
 

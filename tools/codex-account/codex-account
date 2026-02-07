@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# codex-account - Manage and switch between multiple Codex accounts
+# Inspired by https://github.com/Sls0n/codex-account-switcher (codex-auth)
+# Linux-only. Uses symlinks for zero-copy switching.
+
+set -euo pipefail
+
+CODEX_DIR="$HOME/.codex"
+ACCOUNTS_DIR="$CODEX_DIR/accounts"
+AUTH_FILE="$CODEX_DIR/auth.json"
+CURRENT_FILE="$CODEX_DIR/current"
+ACCOUNT_NAME_PATTERN='^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+
+die() { echo "Error: $*" >&2; exit 1; }
+
+validate_name() {
+    local name="$1"
+    name="${name%.json}"
+    [[ -z "$name" ]] && die "Account name cannot be empty"
+    [[ "$name" =~ $ACCOUNT_NAME_PATTERN ]] || die "Invalid account name '$name'. Use alphanumeric, dots, dashes, underscores."
+    echo "$name"
+}
+
+get_current() {
+    if [[ -f "$CURRENT_FILE" ]]; then
+        local name
+        name=$(<"$CURRENT_FILE")
+        name="${name%$'\n'}"
+        [[ -n "$name" ]] && echo "$name" && return
+    fi
+    # Fallback: resolve symlink
+    if [[ -L "$AUTH_FILE" ]]; then
+        local target
+        target=$(readlink "$AUTH_FILE")
+        target=$(basename "$target")
+        echo "${target%.json}"
+        return
+    fi
+    echo ""
+}
+
+cmd_save() {
+    [[ $# -lt 1 ]] && die "Usage: codex-account save <name>"
+    local name
+    name=$(validate_name "$1")
+
+    [[ -f "$AUTH_FILE" || -L "$AUTH_FILE" ]] || die "No auth file found at $AUTH_FILE. Log in to Codex first."
+
+    mkdir -p "$ACCOUNTS_DIR"
+
+    # Copy the actual file content (resolve symlink if needed)
+    cp "$(readlink -f "$AUTH_FILE")" "$ACCOUNTS_DIR/$name.json"
+    chmod 600 "$ACCOUNTS_DIR/$name.json"
+
+    echo "$name" > "$CURRENT_FILE"
+
+    echo "Saved current Codex auth as \"$name\"."
+}
+
+cmd_use() {
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        # Interactive selection
+        local accounts=()
+        if [[ -d "$ACCOUNTS_DIR" ]]; then
+            while IFS= read -r -d '' f; do
+                accounts+=("$(basename "${f%.json}")")
+            done < <(find "$ACCOUNTS_DIR" -maxdepth 1 -name '*.json' -type f -print0 | sort -z)
+        fi
+        [[ ${#accounts[@]} -eq 0 ]] && die "No saved accounts. Run 'codex-account save <name>' first."
+
+        local current
+        current=$(get_current)
+
+        echo "Select account:"
+        local i=1
+        for acct in "${accounts[@]}"; do
+            local mark=" "
+            [[ "$acct" == "$current" ]] && mark="*"
+            echo "  $mark $i) $acct"
+            ((i++))
+        done
+
+        echo ""
+        read -rp "Enter number: " choice
+        [[ "$choice" =~ ^[0-9]+$ ]] || die "Invalid selection"
+        [[ "$choice" -ge 1 && "$choice" -le ${#accounts[@]} ]] || die "Selection out of range"
+        name="${accounts[$((choice - 1))]}"
+    else
+        name=$(validate_name "$name")
+    fi
+
+    local source="$ACCOUNTS_DIR/$name.json"
+    [[ -f "$source" ]] || die "Account \"$name\" not found. Run 'codex-account list' to see saved accounts."
+
+    mkdir -p "$CODEX_DIR"
+
+    # Replace auth.json with symlink
+    rm -f "$AUTH_FILE"
+    ln -s "$(readlink -f "$source")" "$AUTH_FILE"
+
+    echo "$name" > "$CURRENT_FILE"
+
+    echo "Switched Codex auth to \"$name\"."
+}
+
+cmd_list() {
+    if [[ ! -d "$ACCOUNTS_DIR" ]]; then
+        echo "No saved Codex accounts yet. Run 'codex-account save <name>'."
+        return
+    fi
+
+    local accounts=()
+    while IFS= read -r -d '' f; do
+        accounts+=("$(basename "${f%.json}")")
+    done < <(find "$ACCOUNTS_DIR" -maxdepth 1 -name '*.json' -type f -print0 | sort -z)
+
+    [[ ${#accounts[@]} -eq 0 ]] && { echo "No saved Codex accounts yet. Run 'codex-account save <name>'."; return; }
+
+    local current
+    current=$(get_current)
+
+    for acct in "${accounts[@]}"; do
+        local mark=" "
+        [[ "$acct" == "$current" ]] && mark="*"
+        echo "$mark $acct"
+    done
+}
+
+cmd_current() {
+    local name
+    name=$(get_current)
+    if [[ -n "$name" ]]; then
+        echo "$name"
+    else
+        echo "No Codex account is active yet."
+    fi
+}
+
+show_help() {
+    echo "codex-account - Manage multiple Codex accounts"
+    echo ""
+    echo "Usage: codex-account <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  save <name>    Save current ~/.codex/auth.json as a named account"
+    echo "  use [name]     Switch to a named account (interactive if no name given)"
+    echo "  list           List all saved accounts (* = active)"
+    echo "  current        Show the currently active account name"
+    echo "  help           Show this help"
+}
+
+case "${1:-help}" in
+    save)    shift; cmd_save "$@" ;;
+    use)     shift; cmd_use "$@" ;;
+    list|ls) cmd_list ;;
+    current) cmd_current ;;
+    help|--help|-h) show_help ;;
+    *)       die "Unknown command '$1'. Run 'codex-account help' for usage." ;;
+esac
