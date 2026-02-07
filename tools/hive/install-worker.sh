@@ -162,6 +162,78 @@ EOF
 chmod +x "$BIN_DIR/xclaude" "$BIN_DIR/xcodex" "$BIN_DIR/xamp"
 log_success "xclaude, xcodex, xamp"
 
+# ---- Browser Tools ----
+
+log_info "Installing dev-browser for Claude Code..."
+npm install -g @anthropic-ai/dev-browser
+log_success "dev-browser (Claude MCP)"
+
+log_info "Installing Playwright for Codex..."
+npm install -g playwright
+npx playwright install --with-deps chromium
+log_success "Playwright + Chromium"
+
+# Configure dev-browser MCP for Claude Code (worker user)
+log_info "Configuring Claude Code MCP settings..."
+WORKER_CLAUDE_DIR="/home/worker/.claude"
+mkdir -p "$WORKER_CLAUDE_DIR"
+
+CLAUDE_SETTINGS="$WORKER_CLAUDE_DIR/settings.json"
+if [ -f "$CLAUDE_SETTINGS" ]; then
+    # Merge dev-browser into existing settings
+    jq '.mcpServers["dev-browser"] = {"command": "dev-browser"}' "$CLAUDE_SETTINGS" > "$CLAUDE_SETTINGS.tmp" \
+        && mv "$CLAUDE_SETTINGS.tmp" "$CLAUDE_SETTINGS"
+else
+    cat > "$CLAUDE_SETTINGS" << 'MCPEOF'
+{
+  "mcpServers": {
+    "dev-browser": {
+      "command": "dev-browser"
+    }
+  }
+}
+MCPEOF
+fi
+chown -R worker:worker "$WORKER_CLAUDE_DIR"
+log_success "Claude MCP configured (dev-browser)"
+
+# Configure Codex to use Playwright for browser testing
+log_info "Configuring Codex Playwright instructions..."
+WORKER_CODEX_DIR="/home/worker/.codex"
+mkdir -p "$WORKER_CODEX_DIR"
+
+CODEX_INSTRUCTIONS="$WORKER_CODEX_DIR/instructions.md"
+if [ ! -f "$CODEX_INSTRUCTIONS" ] || ! grep -q "Playwright" "$CODEX_INSTRUCTIONS" 2>/dev/null; then
+    cat >> "$CODEX_INSTRUCTIONS" << 'CODEXEOF'
+
+## Browser Testing with Playwright
+
+Playwright is installed globally for browser testing. Use it to verify UI changes:
+
+```bash
+# Take a screenshot of a page
+npx playwright screenshot --browser chromium http://localhost:3000 screenshot.png
+
+# Run a quick browser check script
+node -e "
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto('http://localhost:3000');
+  await page.screenshot({ path: 'screenshot.png' });
+  console.log('Title:', await page.title());
+  await browser.close();
+})();
+"
+```
+
+For UI stories, always verify changes visually using Playwright before marking complete.
+CODEXEOF
+fi
+chown -R worker:worker "$WORKER_CODEX_DIR"
+log_success "Codex Playwright instructions configured"
+
 # ---- Desktop & Remote Access ----
 
 if [ "$NO_DESKTOP" = false ]; then

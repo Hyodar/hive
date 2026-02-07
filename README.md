@@ -59,24 +59,24 @@ Skills (`prd`, `ralph-tasks`, `ralph`) are installed globally during `hive worke
 
 | Command | Description |
 |---------|-------------|
-| `hive init` | Initialize this machine as manager (Telegram bot + worker registry) |
+| [`hive init`](tools/hive/) | Initialize this machine as manager (Telegram bot + worker registry) |
 
-### Worker Management
+### [Worker Management](tools/hive/)
 
 | Command | Description |
 |---------|-------------|
-| `hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]` | Full remote setup via SSH |
-| `hive worker add <name> [--host <host>]` | Register an existing worker |
+| [`hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]`](tools/hive/) | Full remote setup via SSH |
+| [`hive worker add <name> [--host <host>]`](tools/hive/) | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
 | `hive worker ssh <name>` | SSH into a worker |
 
-### Repo Transfer
+### [Repo Transfer](tools/repo/)
 
 | Command | Description |
 |---------|-------------|
-| `hive repo send <worker> [branch]` | Send current repo to a worker via git bundle |
-| `hive repo fetch <worker> [branch]` | Fetch repo back from a worker |
+| [`hive repo send <worker> [branch]`](tools/repo/) | Send current repo to a worker via git bundle |
+| [`hive repo fetch <worker> [branch]`](tools/repo/) | Fetch repo back from a worker |
 | `hive repo ssh <worker>` | SSH into worker at the repo directory |
 
 ## 🔧 Worker Tools
@@ -88,13 +88,13 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | **AI Agents** | `xclaude` | `claude --dangerously-skip-permissions` |
 | | `xcodex` | `codex --dangerously-bypass-approvals-and-sandbox` |
 | | `xamp` | `amp --dangerously-allow-all` |
-| **Orchestration** | `ralph2` | Autonomous agent loop — reads `prd.json` from CWD, loads ralph skill globally |
-| | `prd --tool <claude\|codex\|amp>` | Create a PRD and convert to `prd.json` interactively |
-| **Notifications** | `alertme` | Send a one-way Telegram alert |
-| | `promptme` | Send a Telegram prompt and wait for a reply |
-| | `tgsetup` | Configure the Telegram bot |
-| **Account Switching** | `codex-account` | Manage multiple Codex accounts |
-| | `claude-account` | Manage multiple Claude Code accounts |
+| **Orchestration** | [`ralph2`](tools/ralph2/) | Autonomous agent loop — reads `prd.json` from CWD, loads ralph skill globally |
+| | [`prd --tool <claude\|codex\|amp>`](tools/ralph2/) | Create a PRD and convert to `prd.json` interactively |
+| **Notifications** | [`alertme`](tools/telegram-bot/) | Send a one-way Telegram alert |
+| | [`promptme`](tools/telegram-bot/) | Send a Telegram prompt and wait for a reply |
+| | [`tgsetup`](tools/telegram-bot/) | Configure the Telegram bot |
+| **Account Switching** | [`codex-account`](tools/codex-account/) | Manage multiple Codex accounts |
+| | [`claude-account`](tools/claude-account/) | Manage multiple Claude Code accounts |
 
 ## 🔑 Account Switching
 
