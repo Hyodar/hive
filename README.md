@@ -41,15 +41,17 @@ hive repo fetch agent-vm-1 main    # Pull results back
 ### Using Ralph
 
 ```bash
-ralphsetup
+# 1. Create a PRD interactively (launches AI tool to generate prd.json)
+prd --tool claude       # or: codex, amp
+
+# 2. Run the agent loop from your project directory
+ralph2                          # defaults to claude
+ralph2 --tool amp 5             # use amp, max 5 iterations
+ralph2 --status                 # check progress
+ralph2 --list                   # see all tasks
 ```
 
-With any of the AI agents, ask it to "load the PRD skill to develop <your feature>" then discuss requirements, and when done ask it to "load the ralph skill and add tasks to prd.json based on <task file>.
-
-Then:
-```bash
-ralph2 --tool <claude|codex|amp> <iterations>
-```
+Skills (`prd`, `ralph-tasks`, `ralph`) are installed globally during `hive worker setup` to `~/.claude/skills/`, `~/.config/amp/skills/`, and `~/.codex/skills/`. No per-project setup needed.
 
 ## 📖 Hive CLI
 
@@ -87,7 +89,7 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | | `xcodex` | `codex --dangerously-bypass-approvals-and-sandbox` |
 | | `xamp` | `amp --dangerously-allow-all` |
 | **Orchestration** | `ralph2` | Autonomous agent loop (Claude, Codex, Amp) |
-| | `ralphsetup <dir>` | Initialize ralph2 in a project |
+| | `prd` | Create a PRD and convert to prd.json interactively |
 | **Notifications** | `alertme` | Send a one-way Telegram alert |
 | | `promptme` | Send a Telegram prompt and wait for a reply |
 | | `tgsetup` | Configure the Telegram bot |
