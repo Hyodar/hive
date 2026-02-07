@@ -15,10 +15,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRD_FILE="$SCRIPT_DIR/prd.json"
-PROGRESS_FILE="$SCRIPT_DIR/progress.txt"
-ARCHIVE_DIR="$SCRIPT_DIR/archive"
-LAST_BRANCH_FILE="$SCRIPT_DIR/.last-branch"
+SKILLS_DIR="${HIVE_SKILLS_DIR:-/etc/hive/ralph2/skills}"
+PRD_FILE="./prd.json"
+PROGRESS_FILE="./progress.txt"
+ARCHIVE_DIR="./archive"
+LAST_BRANCH_FILE="./.ralph2-last-branch"
 
 # Colors
 RED='\033[0;31m'
@@ -118,7 +119,7 @@ fi
 check_prd() {
     if [ ! -f "$PRD_FILE" ]; then
         echo -e "${RED}Error: PRD file not found at $PRD_FILE${NC}"
-        echo "Create one from prd.json.example or use 'ralphsetup' to initialize"
+        echo "Run 'prd --tool <claude|codex|amp>' to create one interactively"
         exit 1
     fi
 }
@@ -363,27 +364,16 @@ echo "Tool:       $TOOL"
 echo "Iterations: $MAX_ITERATIONS (max)"
 show_status
 
-# Get prompt file based on tool
-get_prompt_file() {
-    case "$TOOL" in
-        amp)
-            echo "$SCRIPT_DIR/prompt.md"
-            ;;
-        claude)
-            echo "$SCRIPT_DIR/CLAUDE.md"
-            ;;
-        codex)
-            echo "$SCRIPT_DIR/CODEX.md"
-            ;;
-    esac
-}
+# Build prompt from ralph skill
+RALPH_SKILL="$SKILLS_DIR/ralph/SKILL.md"
 
-PROMPT_FILE=$(get_prompt_file)
-
-if [ ! -f "$PROMPT_FILE" ]; then
-    echo -e "${RED}Error: Prompt file not found: $PROMPT_FILE${NC}"
+if [ ! -f "$RALPH_SKILL" ]; then
+    echo -e "${RED}Error: Ralph skill not found at $RALPH_SKILL${NC}"
+    echo "Run 'hive worker setup' or install skills manually"
     exit 1
 fi
+
+RALPH_PROMPT="Read and follow the instructions in $RALPH_SKILL — you are the Ralph2 autonomous agent described there. The prd.json and progress.txt files are in the current directory."
 
 # Main loop
 for i in $(seq 1 $MAX_ITERATIONS); do
@@ -425,16 +415,16 @@ for i in $(seq 1 $MAX_ITERATIONS); do
         esac
     fi
 
-    # Run the selected tool
+    # Run the selected tool with ralph skill prompt
     case "$TOOL" in
         amp)
-            OUTPUT=$(cat "$PROMPT_FILE" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(echo "$RALPH_PROMPT" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
             ;;
         claude)
-            OUTPUT=$(claude --dangerously-skip-permissions --print < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(claude --dangerously-skip-permissions --print -p "$RALPH_PROMPT" 2>&1 | tee /dev/stderr) || true
             ;;
         codex)
-            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" < "$PROMPT_FILE" 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" "$RALPH_PROMPT" 2>&1 | tee /dev/stderr) || true
             ;;
     esac
 

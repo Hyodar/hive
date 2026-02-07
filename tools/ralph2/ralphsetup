@@ -17,6 +17,11 @@ NC='\033[0m'
 usage() {
     echo "ralphsetup - Initialize ralph2 in a project directory"
     echo ""
+    echo -e "${YELLOW}NOTE: ralphsetup is deprecated.${NC}"
+    echo "Skills are now installed globally during 'hive worker setup'."
+    echo "Use 'prd --tool <claude|codex|amp>' to create PRDs interactively."
+    echo "Use 'ralph2' to run the agent loop (reads prd.json from current directory)."
+    echo ""
     echo "Usage: ralphsetup <directory> [OPTIONS]"
     echo ""
     echo "Options:"
@@ -34,8 +39,8 @@ usage() {
     echo ""
     echo "Files installed:"
     echo "  Project: scripts/ralph/         # ralph2.sh, prompts, prd.json"
-    echo "  Global:  ~/.config/amp/skills/  # Amp skills (prd, ralph)"
-    echo "  Global:  ~/.claude/skills/      # Claude Code skills (prd, ralph)"
+    echo "  Global:  ~/.config/amp/skills/  # Amp skills (prd, ralph-tasks, ralph)"
+    echo "  Global:  ~/.claude/skills/      # Claude Code skills (prd, ralph-tasks, ralph)"
     exit 0
 }
 
@@ -172,6 +177,12 @@ install_global_skills() {
 }
 
 echo ""
+echo -e "${YELLOW}========================================"
+echo -e "  NOTE: ralphsetup is deprecated"
+echo -e "  Skills are installed globally by 'hive worker setup'."
+echo -e "  Use 'prd' to create PRDs and 'ralph2' to run the loop."
+echo -e "========================================${NC}"
+echo ""
 echo -e "${CYAN}========================================"
 echo -e "  Ralph2 Setup"
 echo -e "========================================${NC}"
@@ -190,10 +201,13 @@ if [ "$SKILLS_ONLY" = true ]; then
     echo "Skills installed to:"
     echo "  - ~/.config/amp/skills/prd"
     echo "  - ~/.config/amp/skills/ralph"
+    echo "  - ~/.config/amp/skills/ralph-tasks"
     echo "  - ~/.claude/skills/prd"
     echo "  - ~/.claude/skills/ralph"
+    echo "  - ~/.claude/skills/ralph-tasks"
     echo ""
-    echo "Use '/prd' to generate PRDs and '/ralph' to convert to JSON."
+    echo "Use '/prd' to generate PRDs, '/ralph-tasks' to convert to JSON,"
+    echo "and '/ralph' for autonomous agent mode."
     exit 0
 fi
 
