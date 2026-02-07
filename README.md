@@ -101,11 +101,11 @@ Switch between multiple AI tool accounts without repeated logins. Both tools sha
 Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher) and [cc-account-switcher](https://github.com/ming86/cc-account-switcher).
 
 ```bash
+# Logout, login, and save as a named account (one step)
+codex-account setup work       # or: claude-account setup work
+
 # Save your current login as a named account
 codex-account save work        # or: claude-account save work
-
-# Log out, log in with another account, then save it too
-codex-account save personal    # or: claude-account save personal
 
 # Switch between them
 codex-account use work         # or: claude-account use work
@@ -121,6 +121,7 @@ codex-account current          # or: claude-account current
 
 | Command | Description |
 |---------|-------------|
+| `setup <name>` | Logout, login, and save as a named account |
 | `save <name>` | Save current auth as a named account |
 | `use [name]` | Switch to a named account (interactive if no name) |
 | `list` | List all saved accounts (`*` = active) |
