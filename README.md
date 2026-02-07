@@ -41,15 +41,17 @@ hive repo fetch agent-vm-1 main    # Pull results back
 ### Using Ralph
 
 ```bash
-ralphsetup
+# 1. Create a PRD interactively (launches AI tool to generate prd.json)
+prd --tool claude       # or: codex, amp
+
+# 2. Run the agent loop from your project directory
+ralph2                          # defaults to claude
+ralph2 --tool amp 5             # use amp, max 5 iterations
+ralph2 --status                 # check progress
+ralph2 --list                   # see all tasks
 ```
 
-With any of the AI agents, ask it to "load the PRD skill to develop <your feature>" then discuss requirements, and when done ask it to "load the ralph skill and add tasks to prd.json based on <task file>.
-
-Then:
-```bash
-ralph2 --tool <claude|codex|amp> <iterations>
-```
+Skills (`prd`, `ralph-tasks`, `ralph`) are installed globally during `hive worker setup` to `~/.claude/skills/`, `~/.config/amp/skills/`, and `~/.codex/skills/`. No per-project setup needed.
 
 ## 📖 Hive CLI
 
@@ -86,13 +88,51 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | **AI Agents** | `xclaude` | `claude --dangerously-skip-permissions` |
 | | `xcodex` | `codex --dangerously-bypass-approvals-and-sandbox` |
 | | `xamp` | `amp --dangerously-allow-all` |
-| **Orchestration** | [`ralph2`](tools/ralph2/) | Autonomous agent loop (Claude, Codex, Amp) |
-| | [`ralphsetup <dir>`](tools/ralph2/) | Initialize ralph2 in a project |
+| **Orchestration** | [`ralph2`](tools/ralph2/) | Autonomous agent loop — reads `prd.json` from CWD, loads ralph skill globally |
+| | [`prd --tool <claude\|codex\|amp>`](tools/ralph2/) | Create a PRD and convert to `prd.json` interactively |
 | **Notifications** | [`alertme`](tools/telegram-bot/) | Send a one-way Telegram alert |
 | | [`promptme`](tools/telegram-bot/) | Send a Telegram prompt and wait for a reply |
 | | [`tgsetup`](tools/telegram-bot/) | Configure the Telegram bot |
 | **Account Switching** | [`codex-account`](tools/codex-account/) | Manage multiple Codex accounts |
 | | [`claude-account`](tools/claude-account/) | Manage multiple Claude Code accounts |
+
+## 🔑 Account Switching
+
+Switch between multiple AI tool accounts without repeated logins. Both tools share the same CLI interface.
+
+Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher) and [cc-account-switcher](https://github.com/ming86/cc-account-switcher).
+
+```bash
+# Logout, login, and save as a named account (one step)
+codex-account setup work       # or: claude-account setup work
+
+# Save your current login as a named account
+codex-account save work        # or: claude-account save work
+
+# Switch between them
+codex-account use work         # or: claude-account use work
+codex-account use personal     # or: claude-account use personal
+
+# Interactive selection (no name = pick from a list)
+codex-account use              # or: claude-account use
+
+# See what's saved
+codex-account list             # or: claude-account list
+codex-account current          # or: claude-account current
+```
+
+| Command | Description |
+|---------|-------------|
+| `setup <name>` | Logout, login, and save as a named account |
+| `save <name>` | Save current auth as a named account |
+| `use [name]` | Switch to a named account (interactive if no name) |
+| `list` | List all saved accounts (`*` = active) |
+| `current` | Show the currently active account name |
+
+- **codex-account** manages `~/.codex/auth.json` snapshots in `~/.codex/accounts/`
+- **claude-account** manages `~/.claude/.credentials.json` and the `oauthAccount` section of `.claude.json`, stored in `~/.claude/accounts/`
+- Both use symlinks for switching (Linux-only)
+- `claude-account` requires `jq`
 
 ## ⚙️ Configuration
 

@@ -311,10 +311,6 @@ chmod +x "$BIN_DIR/hive"
 
 # Ralph2 files
 cp "$SCRIPT_DIR/tools/ralph2/ralph2.sh" "$CONFIG_DIR/ralph2/"
-cp "$SCRIPT_DIR/tools/ralph2/prompt.md" "$CONFIG_DIR/ralph2/"
-cp "$SCRIPT_DIR/tools/ralph2/CLAUDE.md" "$CONFIG_DIR/ralph2/"
-cp "$SCRIPT_DIR/tools/ralph2/AGENTS.md" "$CONFIG_DIR/ralph2/"
-cp "$SCRIPT_DIR/tools/ralph2/CODEX.md" "$CONFIG_DIR/ralph2/"
 cp "$SCRIPT_DIR/tools/ralph2/prd.json.example" "$CONFIG_DIR/ralph2/"
 [ -d "$SCRIPT_DIR/tools/ralph2/skills" ] && cp -r "$SCRIPT_DIR/tools/ralph2/skills/"* "$CONFIG_DIR/ralph2/skills/"
 chmod +x "$CONFIG_DIR/ralph2/ralph2.sh"
