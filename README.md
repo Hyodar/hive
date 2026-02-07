@@ -57,24 +57,24 @@ ralph2 --tool <claude|codex|amp> <iterations>
 
 | Command | Description |
 |---------|-------------|
-| `hive init` | Initialize this machine as manager (Telegram bot + worker registry) |
+| [`hive init`](tools/hive/) | Initialize this machine as manager (Telegram bot + worker registry) |
 
-### Worker Management
+### [Worker Management](tools/hive/)
 
 | Command | Description |
 |---------|-------------|
-| `hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]` | Full remote setup via SSH |
-| `hive worker add <name> [--host <host>]` | Register an existing worker |
+| [`hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]`](tools/hive/) | Full remote setup via SSH |
+| [`hive worker add <name> [--host <host>]`](tools/hive/) | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
 | `hive worker ssh <name>` | SSH into a worker |
 
-### Repo Transfer
+### [Repo Transfer](tools/repo/)
 
 | Command | Description |
 |---------|-------------|
-| `hive repo send <worker> [branch]` | Send current repo to a worker via git bundle |
-| `hive repo fetch <worker> [branch]` | Fetch repo back from a worker |
+| [`hive repo send <worker> [branch]`](tools/repo/) | Send current repo to a worker via git bundle |
+| [`hive repo fetch <worker> [branch]`](tools/repo/) | Fetch repo back from a worker |
 | `hive repo ssh <worker>` | SSH into worker at the repo directory |
 
 ## 🔧 Worker Tools
@@ -86,51 +86,13 @@ Installed as standalone commands on each worker by `hive worker setup`.
 | **AI Agents** | `xclaude` | `claude --dangerously-skip-permissions` |
 | | `xcodex` | `codex --dangerously-bypass-approvals-and-sandbox` |
 | | `xamp` | `amp --dangerously-allow-all` |
-| **Orchestration** | `ralph2` | Autonomous agent loop (Claude, Codex, Amp) |
-| | `ralphsetup <dir>` | Initialize ralph2 in a project |
-| **Notifications** | `alertme` | Send a one-way Telegram alert |
-| | `promptme` | Send a Telegram prompt and wait for a reply |
-| | `tgsetup` | Configure the Telegram bot |
-| **Account Switching** | `codex-account` | Manage multiple Codex accounts |
-| | `claude-account` | Manage multiple Claude Code accounts |
-
-## 🔑 Account Switching
-
-Switch between multiple AI tool accounts without repeated logins. Both tools share the same CLI interface.
-
-Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher) and [cc-account-switcher](https://github.com/ming86/cc-account-switcher).
-
-```bash
-# Logout, login, and save as a named account (one step)
-codex-account setup work       # or: claude-account setup work
-
-# Save your current login as a named account
-codex-account save work        # or: claude-account save work
-
-# Switch between them
-codex-account use work         # or: claude-account use work
-codex-account use personal     # or: claude-account use personal
-
-# Interactive selection (no name = pick from a list)
-codex-account use              # or: claude-account use
-
-# See what's saved
-codex-account list             # or: claude-account list
-codex-account current          # or: claude-account current
-```
-
-| Command | Description |
-|---------|-------------|
-| `setup <name>` | Logout, login, and save as a named account |
-| `save <name>` | Save current auth as a named account |
-| `use [name]` | Switch to a named account (interactive if no name) |
-| `list` | List all saved accounts (`*` = active) |
-| `current` | Show the currently active account name |
-
-- **codex-account** manages `~/.codex/auth.json` snapshots in `~/.codex/accounts/`
-- **claude-account** manages `~/.claude/.credentials.json` and the `oauthAccount` section of `.claude.json`, stored in `~/.claude/accounts/`
-- Both use symlinks for switching (Linux-only)
-- `claude-account` requires `jq`
+| **Orchestration** | [`ralph2`](tools/ralph2/) | Autonomous agent loop (Claude, Codex, Amp) |
+| | [`ralphsetup <dir>`](tools/ralph2/) | Initialize ralph2 in a project |
+| **Notifications** | [`alertme`](tools/telegram-bot/) | Send a one-way Telegram alert |
+| | [`promptme`](tools/telegram-bot/) | Send a Telegram prompt and wait for a reply |
+| | [`tgsetup`](tools/telegram-bot/) | Configure the Telegram bot |
+| **Account Switching** | [`codex-account`](tools/codex-account/) | Manage multiple Codex accounts |
+| | [`claude-account`](tools/claude-account/) | Manage multiple Claude Code accounts |
 
 ## ⚙️ Configuration
 
