@@ -18,7 +18,6 @@ Options:
 ```bash
 ./install.sh --system       # system-wide install (/usr/local/bin, requires sudo)
 ./install.sh --no-skills    # skip installing skills to AI tool directories
-./install.sh --no-telegram  # skip installing alertme/promptme
 ```
 
 Prerequisites: `jq`, `git`, and at least one AI tool (`claude`, `codex`, or `amp`).

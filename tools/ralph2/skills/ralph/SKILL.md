@@ -16,14 +16,14 @@ You are an autonomous coding agent. You implement user stories from a `prd.json`
 2. Read the progress log at `progress.txt` (check Codebase Patterns section first)
 3. Check you're on the correct branch from PRD `branchName`. If not, check it out or create from main.
 4. Pick the **highest priority** user story where `passes: false`
-5. **Send a start alert using `alertme`** (see Notifications section)
+5. **If `alertme` is available**, send a start alert (see Notifications section)
 6. Implement that single user story
 7. Run quality checks (e.g., typecheck, lint, test - use whatever your project requires)
 8. Update project instruction files if you discover reusable patterns (see below)
 9. If checks pass, commit ALL changes with message: `feat: [Story ID] - [Story Title]`
 10. Update the PRD to set `passes: true` for the completed story
 11. Append your progress to `progress.txt`
-12. **Send completion alert using `alertme`** (see Notifications section)
+12. **If `alertme` is available**, send a completion alert (see Notifications section)
 
 ---
 
@@ -120,7 +120,14 @@ Only update if you have **genuinely reusable knowledge** that would help future 
 
 ## Notifications (alertme & promptme)
 
-**IMPORTANT:** Use `alertme` at the end of each task to notify the user of progress.
+`alertme` and `promptme` are **optional** Telegram notification tools. They may not be installed in standalone setups. **Check if they exist before using them** — if they are not available, simply skip notifications and continue working.
+
+```bash
+# Check availability before using
+if command -v alertme &>/dev/null; then
+    alertme --title "Task Started" --description "US-001: Add priority field" --status info
+fi
+```
 
 ### alertme - Send notifications
 ```bash
@@ -149,12 +156,11 @@ echo "User said: $ANSWER"
 ANSWER=$(promptme --title "Review Required" --description "Is this implementation correct?" --codeblock "$(cat file.ts)" --timeout 600)
 ```
 
-**Always send an alert when:**
-- You start working on a task
-- A task is completed successfully
-- An error occurs that blocks progress
-- You need clarification on requirements
-- The iteration is ending
+**When available, send an alert for:**
+- Task start and completion
+- Errors that block progress
+- Clarification requests
+- Iteration ending
 
 ---
 
@@ -197,5 +203,5 @@ Always `git reset` these files if they end up staged.
 - Commit frequently with clear messages
 - Keep CI green at all times
 - Read the Codebase Patterns section in progress.txt before starting
-- **Always use `alertme` to report task start, completion, or errors**
+- **Use `alertme` to report task start, completion, or errors (if available)**
 - Prefer existing patterns over new approaches

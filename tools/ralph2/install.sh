@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh - Standalone installer for Ralph2
 #
-# Installs ralph2 and prd commands, skills, and optionally alertme/promptme.
+# Installs ralph2 and prd commands plus skills.
 # Works independently of the full Hive worker setup.
 #
 # Usage:
@@ -11,7 +11,6 @@
 # Options:
 #   --system          Install system-wide to /usr/local/bin (requires sudo)
 #   --no-skills       Skip installing skills to AI tool directories
-#   --no-telegram     Skip installing alertme/promptme
 #   --help            Show this help
 
 set -e
@@ -35,7 +34,6 @@ log_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 # Defaults
 SYSTEM_INSTALL=false
 INSTALL_SKILLS=true
-INSTALL_TELEGRAM=true
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -48,10 +46,6 @@ while [[ $# -gt 0 ]]; do
             INSTALL_SKILLS=false
             shift
             ;;
-        --no-telegram)
-            INSTALL_TELEGRAM=false
-            shift
-            ;;
         --help|-h)
             echo "Ralph2 Standalone Installer"
             echo ""
@@ -60,7 +54,6 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --system          Install system-wide to /usr/local/bin (requires sudo)"
             echo "  --no-skills       Skip installing skills to AI tool directories"
-            echo "  --no-telegram     Skip installing alertme/promptme"
             echo "  --help            Show this help"
             echo ""
             echo "Default install locations (user-local):"
@@ -214,21 +207,6 @@ if ! grep -q "^export HIVE_SKILLS_DIR" "$BIN_DIR/prd"; then
 fi
 
 log_success "ralph2, prd"
-
-# ---- Install alertme/promptme (optional) ----
-
-if [ "$INSTALL_TELEGRAM" = true ]; then
-    TELEGRAM_DIR="$SCRIPT_DIR/../telegram-bot"
-    if [ -f "$TELEGRAM_DIR/alertme" ] && [ -f "$TELEGRAM_DIR/promptme" ]; then
-        log_info "Installing alertme and promptme..."
-        cp "$TELEGRAM_DIR/alertme" "$BIN_DIR/alertme"
-        cp "$TELEGRAM_DIR/promptme" "$BIN_DIR/promptme"
-        chmod +x "$BIN_DIR/alertme" "$BIN_DIR/promptme"
-        log_success "alertme, promptme (Telegram bot service required separately)"
-    else
-        log_warn "Telegram tools not found at $TELEGRAM_DIR — skipping"
-    fi
-fi
 
 # ---- Install skills to AI tool directories (optional) ----
 
