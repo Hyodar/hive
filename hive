@@ -17,6 +17,8 @@ fi
 
 export HIVE_DIR HIVE_TOOLS
 
+HIVE_SSH_DIR="$HIVE_DIR/ssh"
+
 # Resolve a worker name to its SSH host from workers.json
 resolve_worker() {
     local NAME="$1"
@@ -30,6 +32,25 @@ resolve_worker() {
         fi
     fi
     echo "$NAME"
+}
+
+# Resolve SSH identity for a worker: per-worker quick-ssh key > configured ssh_key > default
+resolve_worker_ssh_id() {
+    local NAME="$1"
+    local HIVE_KEY="$HIVE_SSH_DIR/${NAME}_ed25519"
+    if [ -f "$HIVE_KEY" ]; then
+        echo "-i $HIVE_KEY"
+        return
+    fi
+    local WORKERS_FILE="$HIVE_DIR/workers.json"
+    if [ -f "$WORKERS_FILE" ]; then
+        local SSH_KEY
+        SSH_KEY=$(jq -r --arg name "$NAME" '.workers[$name].ssh_key // empty' "$WORKERS_FILE" 2>/dev/null)
+        if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+            echo "-i $SSH_KEY"
+            return
+        fi
+    fi
 }
 
 # Colors
@@ -52,6 +73,7 @@ show_help() {
     echo "  worker add <name> [--host <host>] Register a worker without setup"
     echo "  worker ls                         List registered workers"
     echo "  worker rm <name>                  Remove a worker from registry"
+    echo "  worker set quick-ssh --name <n>   Set up passwordless SSH to a worker"
     echo "  worker ssh <name>                 SSH into a worker"
     echo ""
     echo -e "${BLUE}Repo registry:${NC}"
@@ -89,7 +111,8 @@ case "$CMD" in
                 ;;
             send|fetch)
                 # Resolve first positional arg (worker name) to SSH host,
-                # and export HIVE_WORKER_NAME for per-worker repo registry.
+                # export HIVE_WORKER_NAME for per-worker repo registry,
+                # and export HIVE_SSH_ID for per-worker SSH identity.
                 RESOLVED_ARGS=()
                 SKIP_NEXT=false
                 HOST_RESOLVED=false
@@ -105,6 +128,7 @@ case "$CMD" in
                         *)
                             if ! $HOST_RESOLVED; then
                                 export HIVE_WORKER_NAME="$arg"
+                                export HIVE_SSH_ID=$(resolve_worker_ssh_id "$arg")
                                 RESOLVED_ARGS+=("$(resolve_worker "$arg")")
                                 HOST_RESOLVED=true
                             else
@@ -138,7 +162,8 @@ case "$CMD" in
                     }
                     REPO_NAME="${REPO_NAME:-$(basename "$REPO_ROOT")}"
                 fi
-                REMOTE_BASE=$(ssh "$SSH_HOST" bash -c "'
+                WORKER_SSH_ID=$(resolve_worker_ssh_id "$WORKER")
+                REMOTE_BASE=$(ssh $WORKER_SSH_ID "$SSH_HOST" bash -c "'
                     BP=\$HOME
                     CFG=\$HOME/.repo-transfer/config
                     if [ -f \"\$CFG\" ]; then
@@ -149,7 +174,7 @@ case "$CMD" in
                     echo \"\$BP\"
                 '") || REMOTE_BASE="~"
                 echo -e "${BLUE}[$REPO_NAME] Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
-                exec ssh -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
+                exec ssh $WORKER_SSH_ID -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
                 ;;
             help|--help|-h)
                 echo "Usage: hive repo <command>"

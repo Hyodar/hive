@@ -1,11 +1,12 @@
 #!/bin/bash
 # hive worker - Manage worker machines
-# Subcommands: setup, add, ls, rm
+# Subcommands: setup, add, ls, rm, set, ssh
 
 set -e
 
 HIVE_DIR="${HIVE_DIR:-/etc/hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
+HIVE_SSH_DIR="$HIVE_DIR/ssh"
 
 # Colors
 RED='\033[0;31m'
@@ -22,20 +23,41 @@ ensure_workers_file() {
     fi
 }
 
+# Resolve SSH identity for a worker: per-worker quick-ssh key > configured ssh_key > default
+resolve_worker_ssh_id() {
+    local NAME="$1"
+    local HIVE_KEY="$HIVE_SSH_DIR/${NAME}_ed25519"
+    if [ -f "$HIVE_KEY" ]; then
+        echo "-i $HIVE_KEY"
+        return
+    fi
+    if [ -f "$WORKERS_FILE" ]; then
+        local SSH_KEY
+        SSH_KEY=$(jq -r --arg name "$NAME" '.workers[$name].ssh_key // empty' "$WORKERS_FILE" 2>/dev/null)
+        if [ -n "$SSH_KEY" ] && [ -f "$SSH_KEY" ]; then
+            echo "-i $SSH_KEY"
+            return
+        fi
+    fi
+}
+
 # ---- hive worker add ----
 worker_add() {
     local NAME=""
     local HOST=""
+    local SSH_KEY=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             --host) HOST="$2"; shift 2 ;;
+            --ssh-key) SSH_KEY="$2"; shift 2 ;;
             --help|-h)
-                echo "Usage: hive worker add <name> [--host <host>]"
+                echo "Usage: hive worker add <name> [--host <host>] [--ssh-key <path>]"
                 echo ""
                 echo "Register a worker without running setup."
                 echo "Name should match the machine's Tailscale name."
                 echo "Host defaults to the name (for Tailscale DNS)."
+                echo "SSH key is stored and used for all SSH operations to this worker."
                 exit 0
                 ;;
             -*)
@@ -50,7 +72,7 @@ worker_add() {
 
     if [ -z "$NAME" ]; then
         echo -e "${RED}[ERROR]${NC} Worker name is required"
-        echo "Usage: hive worker add <name> [--host <host>]"
+        echo "Usage: hive worker add <name> [--host <host>] [--ssh-key <path>]"
         exit 1
     fi
 
@@ -64,9 +86,15 @@ worker_add() {
     fi
 
     local ADDED=$(date -Iseconds)
-    jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" \
-        '.workers[$name] = {"host": $host, "name": $name, "added": $added}' \
-        "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+    if [ -n "$SSH_KEY" ]; then
+        jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" --arg ssh_key "$SSH_KEY" \
+            '.workers[$name] = {"host": $host, "name": $name, "added": $added, "ssh_key": $ssh_key}' \
+            "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+    else
+        jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" \
+            '.workers[$name] = {"host": $host, "name": $name, "added": $added}' \
+            "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+    fi
     mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
 
     echo -e "${GREEN}[OK]${NC} Worker '$NAME' registered (host: $HOST)"
@@ -118,6 +146,104 @@ worker_rm() {
     echo -e "${GREEN}[OK]${NC} Worker '$NAME' removed"
 }
 
+# ---- hive worker set quick-ssh ----
+worker_set_quick_ssh() {
+    local WORKER=""
+    local ENABLE=""
+
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --name) WORKER="$2"; shift 2 ;;
+            --help|-h)
+                echo "Usage: hive worker set quick-ssh --name <worker> <true|false>"
+                echo ""
+                echo "Set up or remove passwordless SSH to a worker."
+                echo "  true   Generate a quick-ssh key and copy it to the worker"
+                echo "  false  Remove the quick-ssh key locally and from the worker"
+                exit 0
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
+            true|false)
+                ENABLE="$1"; shift ;;
+            *)
+                echo -e "${RED}Unexpected argument: $1${NC}"; exit 1 ;;
+        esac
+    done
+
+    if [ -z "$WORKER" ] || [ -z "$ENABLE" ]; then
+        echo -e "${RED}[ERROR]${NC} Both --name and true/false are required"
+        echo "Usage: hive worker set quick-ssh --name <worker> <true|false>"
+        exit 1
+    fi
+
+    ensure_workers_file
+
+    local HOST
+    HOST=$(jq -r --arg name "$WORKER" '.workers[$name].host // empty' "$WORKERS_FILE" 2>/dev/null)
+    if [ -z "$HOST" ]; then
+        echo -e "${RED}[ERROR]${NC} Worker '$WORKER' not found"
+        exit 1
+    fi
+
+    local HIVE_KEY="$HIVE_SSH_DIR/${WORKER}_ed25519"
+
+    if [ "$ENABLE" = "true" ]; then
+        # Generate per-worker quick-ssh key if it doesn't exist
+        if [ ! -f "$HIVE_KEY" ]; then
+            echo -e "${BLUE}Generating quick-ssh key ($HIVE_KEY)...${NC}"
+            mkdir -p "$HIVE_SSH_DIR"
+            ssh-keygen -t ed25519 -N "" -f "$HIVE_KEY" -C "hive-$WORKER"
+            echo -e "${GREEN}[OK]${NC} Key generated: $HIVE_KEY"
+        else
+            echo -e "${BLUE}Using existing quick-ssh key: $HIVE_KEY${NC}"
+        fi
+
+        # Use the worker's configured ssh_key (if any) to authenticate for ssh-copy-id
+        local BASE_SSH_ID=""
+        local WORKER_SSH_KEY
+        WORKER_SSH_KEY=$(jq -r --arg name "$WORKER" '.workers[$name].ssh_key // empty' "$WORKERS_FILE" 2>/dev/null)
+        if [ -n "$WORKER_SSH_KEY" ] && [ -f "$WORKER_SSH_KEY" ]; then
+            BASE_SSH_ID="-o IdentityFile=$WORKER_SSH_KEY"
+        fi
+
+        # Copy quick-ssh key to worker
+        echo -e "${BLUE}Copying key to worker '$WORKER' ($HOST)...${NC}"
+        ssh-copy-id $BASE_SSH_ID -i "$HIVE_KEY" "$HOST"
+
+        echo ""
+        echo -e "${GREEN}[OK]${NC} Quick SSH configured for worker '$WORKER'"
+        echo "All SSH commands to this worker will now be passwordless."
+    else
+        # --- Disable quick-ssh ---
+        if [ ! -f "$HIVE_KEY" ]; then
+            echo -e "${YELLOW}[WARN]${NC} No quick-ssh key found for worker '$WORKER'"
+            return 0
+        fi
+
+        # Remove from remote authorized_keys
+        if [ -f "$HIVE_KEY.pub" ]; then
+            local PUB_KEY_DATA
+            PUB_KEY_DATA=$(awk '{print $2}' "$HIVE_KEY.pub")
+
+            # Use the quick-ssh key itself (still valid) to connect and remove it
+            echo -e "${BLUE}Removing key from worker '$WORKER' ($HOST)...${NC}"
+            ssh -i "$HIVE_KEY" "$HOST" "
+                if [ -f ~/.ssh/authorized_keys ]; then
+                    grep -vF '$PUB_KEY_DATA' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp
+                    mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys
+                fi
+            " 2>/dev/null || {
+                echo -e "${YELLOW}[WARN]${NC} Could not remove key from remote (worker may be unreachable)"
+            }
+        fi
+
+        # Delete local key files
+        rm -f "$HIVE_KEY" "$HIVE_KEY.pub"
+        echo -e "${GREEN}[OK]${NC} Quick SSH disabled for worker '$WORKER'"
+    fi
+}
+
 # ---- hive worker setup ----
 worker_setup() {
     local HOST=""
@@ -125,6 +251,7 @@ worker_setup() {
     local PASSWORD=""
     local TAILSCALE_KEY=""
     local NO_DESKTOP=false
+    local SSH_KEY=""
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -132,6 +259,7 @@ worker_setup() {
             --password) PASSWORD="$2"; shift 2 ;;
             --tailscale-key) TAILSCALE_KEY="$2"; shift 2 ;;
             --no-desktop) NO_DESKTOP=true; shift ;;
+            --ssh-key) SSH_KEY="$2"; shift 2 ;;
             --help|-h)
                 cat <<EOF
 Usage: hive worker setup <host> --name <name> [options]
@@ -144,6 +272,7 @@ Arguments:
   --password        Password for the 'worker' user (default: SSH key only)
   --tailscale-key   Tailscale auth key for non-interactive setup
   --no-desktop      Skip NoMachine, Cinnamon, and VSCode (CLI-only worker)
+  --ssh-key         SSH key to use for accessing this machine (stored in metadata)
 
 This will:
   1. Install git on the remote machine
@@ -177,6 +306,10 @@ EOF
 
     ensure_workers_file
 
+    # Resolve SSH identity: --ssh-key flag for setup
+    local SETUP_SSH_ID=""
+    [ -n "$SSH_KEY" ] && SETUP_SSH_ID="-i $SSH_KEY"
+
     echo -e "${CYAN}"
     echo "========================================"
     echo "  Hive Worker Setup: $NAME"
@@ -200,6 +333,9 @@ EOF
         echo "  Desktop:   none (CLI-only)"
     else
         echo "  Desktop:   Cinnamon + NoMachine"
+    fi
+    if [ -n "$SSH_KEY" ]; then
+        echo "  SSH key:   $SSH_KEY"
     fi
     echo ""
     if [ -z "$TAILSCALE_KEY" ]; then
@@ -226,7 +362,7 @@ EOF
 
     echo ""
     echo -e "${BLUE}[1/6]${NC} Installing git on remote..."
-    ssh "$HOST" "apt-get update -qq && apt-get install -y -qq git" 2>/dev/null || {
+    ssh $SETUP_SSH_ID "$HOST" "apt-get update -qq && apt-get install -y -qq git" 2>/dev/null || {
         echo -e "${YELLOW}[WARN]${NC} Could not install git (may need sudo or already installed)"
     }
 
@@ -234,8 +370,8 @@ EOF
     BUNDLE_FILE=$(mktemp /tmp/agent-setup-XXXXXX.bundle)
     trap "rm -f '$BUNDLE_FILE'" EXIT
     git -C "$REPO_DIR" bundle create "$BUNDLE_FILE" --all -- 2>/dev/null
-    scp -q "$BUNDLE_FILE" "$HOST:/tmp/agent-setup.bundle"
-    ssh "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
+    scp $SETUP_SSH_ID -q "$BUNDLE_FILE" "$HOST:/tmp/agent-setup.bundle"
+    ssh $SETUP_SSH_ID "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
 
     echo -e "${BLUE}[3/6]${NC} Running worker installation..."
     INSTALL_ARGS="--name '$NAME'"
@@ -248,20 +384,24 @@ EOF
     if [ "$NO_DESKTOP" = true ]; then
         INSTALL_ARGS="$INSTALL_ARGS --no-desktop"
     fi
-    ssh -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh $INSTALL_ARGS"
+    ssh $SETUP_SSH_ID -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh $INSTALL_ARGS"
 
     echo -e "${BLUE}[4/6]${NC} Copying Telegram config..."
     TG_CONFIG="$HIVE_DIR/telegram_config.json"
     if [ -f "$TG_CONFIG" ]; then
-        scp -q "$TG_CONFIG" "$HOST:/etc/hive/telegram_config.json"
-        ssh "$HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
+        scp $SETUP_SSH_ID -q "$TG_CONFIG" "$HOST:/etc/hive/telegram_config.json"
+        ssh $SETUP_SSH_ID "$HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
         echo -e "${GREEN}[OK]${NC} Telegram config copied"
     else
         echo -e "${YELLOW}[WARN]${NC} No Telegram config found. Run 'hive init' first."
     fi
 
     echo -e "${BLUE}[5/6]${NC} Registering worker..."
-    worker_add "$NAME" --host "worker@$NAME"
+    if [ -n "$SSH_KEY" ]; then
+        worker_add "$NAME" --host "worker@$NAME" --ssh-key "$SSH_KEY"
+    else
+        worker_add "$NAME" --host "worker@$NAME"
+    fi
 
     echo -e "${BLUE}[6/6]${NC} Setup complete!"
     echo ""
@@ -283,7 +423,7 @@ EOF
         echo -e "${BLUE}Connecting as worker@...${NC}"
         # SSH as worker user to the original host to run tailscale up
         BARE_HOST="${HOST#*@}"
-        ssh -t "worker@$BARE_HOST" || true
+        ssh $SETUP_SSH_ID -t "worker@$BARE_HOST" || true
     fi
 }
 
@@ -296,6 +436,24 @@ case "$SUBCMD" in
     add)     worker_add "$@" ;;
     ls|list) worker_ls "$@" ;;
     rm|remove) worker_rm "$@" ;;
+    set)
+        SET_SUBCMD="${1:-}"
+        shift 2>/dev/null || true
+        case "$SET_SUBCMD" in
+            quick-ssh) worker_set_quick_ssh "$@" ;;
+            --help|-h|help|"")
+                echo "Usage: hive worker set <setting>"
+                echo ""
+                echo "Settings:"
+                echo "  quick-ssh --name <worker> <true|false>"
+                ;;
+            *)
+                echo -e "${RED}Unknown setting: $SET_SUBCMD${NC}"
+                echo "Run 'hive worker set help' for usage"
+                exit 1
+                ;;
+        esac
+        ;;
     ssh)
         WORKER="${1:-}"
         if [ -z "$WORKER" ]; then
@@ -305,17 +463,19 @@ case "$SUBCMD" in
         ensure_workers_file
         SSH_TARGET=$(jq -r --arg name "$WORKER" '.workers[$name].host // empty' "$WORKERS_FILE" 2>/dev/null)
         SSH_TARGET="${SSH_TARGET:-$WORKER}"
-        exec ssh -t "$SSH_TARGET"
+        WORKER_SSH_ID=$(resolve_worker_ssh_id "$WORKER")
+        exec ssh $WORKER_SSH_ID -t "$SSH_TARGET"
         ;;
     --help|-h|help)
         echo "Usage: hive worker <command>"
         echo ""
         echo "Commands:"
-        echo "  setup <host> --name <name>   Set up a remote worker via SSH"
-        echo "  add <name> [--host <host>]   Register a worker without setup"
-        echo "  ls                           List registered workers"
-        echo "  rm <name>                    Remove a worker from registry"
-        echo "  ssh <name>                   SSH into a worker"
+        echo "  setup <host> --name <name>          Set up a remote worker via SSH"
+        echo "  add <name> [--host <host>]          Register a worker without setup"
+        echo "  ls                                  List registered workers"
+        echo "  rm <name>                           Remove a worker from registry"
+        echo "  set quick-ssh --name <n> true|false Set up or remove passwordless SSH"
+        echo "  ssh <name>                          SSH into a worker"
         ;;
     *)
         echo -e "${RED}Unknown worker command: ${SUBCMD:-<none>}${NC}"
