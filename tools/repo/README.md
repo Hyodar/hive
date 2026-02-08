@@ -40,9 +40,12 @@ repo-fetch user@10.0.0.5 dev --full
 
 Apply a git bundle to a local repository. Used internally by `repo-send` via SSH, but can also be run standalone.
 
+Branch spec: `<bundle-branch>[:<local-branch>]` — maps the bundle's branch to a different local name.
+
 ```bash
-repo-apply <bundle-file> <branch>
+repo-apply <bundle-file> <branch-spec>
 repo-apply /tmp/myrepo.bundle main
+repo-apply /tmp/myrepo.bundle main:dev
 repo-apply /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
 ```
 
