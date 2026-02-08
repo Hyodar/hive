@@ -16,10 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/repo-registry.sh"
 
-# Quick-ssh key support
-HIVE_SSH_KEY="$HOME/.ssh/hive_ed25519"
-HIVE_SSH_ID=""
-[ -f "$HIVE_SSH_KEY" ] && HIVE_SSH_ID="-i $HIVE_SSH_KEY"
+# SSH identity (exported by hive main for per-worker quick-ssh)
+HIVE_SSH_ID="${HIVE_SSH_ID:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

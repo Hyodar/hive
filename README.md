@@ -86,11 +86,11 @@ Skills (`prd`, `ralph-tasks`, `ralph`) are installed globally during `hive worke
 
 | Command | Description |
 |---------|-------------|
-| [`hive worker setup <host> --name <name> [--tailscale-key <key>] [--no-desktop]`](tools/hive/) | Full remote setup via SSH |
-| [`hive worker add <name> [--host <host>]`](tools/hive/) | Register an existing worker |
+| [`hive worker setup <host> --name <name> [opts]`](tools/hive/) | Full remote setup via SSH |
+| [`hive worker add <name> [--host <host>] [--ssh-key <path>]`](tools/hive/) | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
-| [`hive worker set quick-ssh <name>`](tools/hive/) | Set up passwordless SSH to a worker |
+| [`hive worker set quick-ssh --name <n> true\|false`](tools/hive/) | Set up or remove passwordless SSH to a worker |
 | `hive worker ssh <name>` | SSH into a worker |
 
 ### [Repo Registry & Transfer](tools/repo/)
@@ -170,6 +170,7 @@ All state lives in `/etc/hive/` on the manager:
 | `config.json` | Manager role config |
 | `workers.json` | Registered workers + per-worker repo mappings |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
+| `ssh/` | Per-worker hive SSH keys (created by `set quick-ssh`) |
 
 ## 📋 Requirements
 
