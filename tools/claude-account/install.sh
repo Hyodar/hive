@@ -8,7 +8,7 @@ set -euo pipefail
 
 TOOL_NAME="claude-account"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-REPO_URL="https://raw.githubusercontent.com/Hyodar/hive/main/tools/claude-account/claude-account"
+REPO_URL="https://raw.githubusercontent.com/Hyodar/hive/master/tools/claude-account/claude-account"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

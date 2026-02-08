@@ -11,7 +11,7 @@ Inspired by [cc-account-switcher](https://github.com/ming86/cc-account-switcher)
 ./install.sh
 
 # Or directly (downloads the script)
-curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/main/tools/claude-account/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/master/tools/claude-account/install.sh | bash
 
 # Custom install directory
 INSTALL_DIR=~/.local/bin ./install.sh

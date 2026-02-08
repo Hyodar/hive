@@ -11,7 +11,7 @@ Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher).
 ./install.sh
 
 # Or directly (downloads the script)
-curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/main/tools/codex-account/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/master/tools/codex-account/install.sh | bash
 
 # Custom install directory
 INSTALL_DIR=~/.local/bin ./install.sh
