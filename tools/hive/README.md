@@ -65,6 +65,14 @@ Remove a worker from the registry.
 hive worker rm agent-vm-2
 ```
 
+### `hive worker set quick-ssh`
+
+Set up passwordless SSH to a worker. Generates an unencrypted hive-specific SSH key (`~/.ssh/hive_ed25519`) if one doesn't exist, then copies it to the worker. After this, all hive SSH commands (`worker ssh`, `repo send`, `repo fetch`, `repo ssh`) connect without password prompts.
+
+```bash
+hive worker set quick-ssh agent-vm-1
+```
+
 ### `hive worker ssh`
 
 SSH into a registered worker.

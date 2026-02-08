@@ -15,6 +15,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/repo-registry.sh"
 
+# Quick-ssh key support
+HIVE_SSH_KEY="$HOME/.ssh/hive_ed25519"
+HIVE_SSH_ID=""
+[ -f "$HIVE_SSH_KEY" ] && HIVE_SSH_ID="-i $HIVE_SSH_KEY"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -128,7 +133,7 @@ echo -e "${BLUE}Fetching${NC} ${REPO_NAME}@${REMOTE_BRANCH} → ${LOCAL_BRANCH}$
 
 # Resolve remote path: use -p if given, otherwise read remote config
 if [ -z "$REMOTE_PATH" ]; then
-    REMOTE_BASE=$(ssh "$HOST" bash -c "'
+    REMOTE_BASE=$(ssh $HIVE_SSH_ID "$HOST" bash -c "'
         BP=\$HOME
         CFG=\$HOME/.repo-transfer/config
         if [ -f \"\$CFG\" ]; then
@@ -157,7 +162,7 @@ echo -e "${BLUE}Creating bundle on $HOST...${NC}"
 
 if [ -n "$LOCAL_TIP" ]; then
     # Try incremental first, fall back to full
-    BUNDLE_CREATED=$(ssh "$HOST" bash -s <<REMOTEOF
+    BUNDLE_CREATED=$(ssh $HIVE_SSH_ID "$HOST" bash -s <<REMOTEOF
         set -e
         cd "$REMOTE_PATH" 2>/dev/null || { echo "REPO_NOT_FOUND"; exit 0; }
         git rev-parse --verify "$REMOTE_BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
@@ -187,7 +192,7 @@ REMOTEOF
     )
 else
     # No local branch - need full bundle
-    BUNDLE_CREATED=$(ssh "$HOST" bash -s <<REMOTEOF
+    BUNDLE_CREATED=$(ssh $HIVE_SSH_ID "$HOST" bash -s <<REMOTEOF
         set -e
         cd "$REMOTE_PATH" 2>/dev/null || { echo "REPO_NOT_FOUND"; exit 0; }
         git rev-parse --verify "$REMOTE_BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
@@ -225,11 +230,11 @@ esac
 
 # Transfer bundle back
 LOCAL_BUNDLE=$(mktemp "/tmp/${REPO_NAME}-XXXXXX.bundle")
-trap "rm -f '$LOCAL_BUNDLE'; ssh '$HOST' 'rm -f \"$REMOTE_BUNDLE\"' 2>/dev/null || true" EXIT
+trap "rm -f '$LOCAL_BUNDLE'; ssh $HIVE_SSH_ID '$HOST' 'rm -f \"$REMOTE_BUNDLE\"' 2>/dev/null || true" EXIT
 
 echo -e "${BLUE}Transferring bundle...${NC}"
-scp -q "$HOST:$REMOTE_BUNDLE" "$LOCAL_BUNDLE"
-ssh "$HOST" "rm -f '$REMOTE_BUNDLE'" 2>/dev/null || true
+scp $HIVE_SSH_ID -q "$HOST:$REMOTE_BUNDLE" "$LOCAL_BUNDLE"
+ssh $HIVE_SSH_ID "$HOST" "rm -f '$REMOTE_BUNDLE'" 2>/dev/null || true
 
 BUNDLE_SIZE=$(du -h "$LOCAL_BUNDLE" | cut -f1)
 echo -e "Bundle: ${BUNDLE_SIZE}"

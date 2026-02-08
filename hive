@@ -17,6 +17,11 @@ fi
 
 export HIVE_DIR HIVE_TOOLS
 
+# Quick-ssh key support
+HIVE_SSH_KEY="$HOME/.ssh/hive_ed25519"
+HIVE_SSH_ID=""
+[ -f "$HIVE_SSH_KEY" ] && HIVE_SSH_ID="-i $HIVE_SSH_KEY"
+
 # Resolve a worker name to its SSH host from workers.json
 resolve_worker() {
     local NAME="$1"
@@ -52,6 +57,7 @@ show_help() {
     echo "  worker add <name> [--host <host>] Register a worker without setup"
     echo "  worker ls                         List registered workers"
     echo "  worker rm <name>                  Remove a worker from registry"
+    echo "  worker set quick-ssh <name>       Set up passwordless SSH to a worker"
     echo "  worker ssh <name>                 SSH into a worker"
     echo ""
     echo -e "${BLUE}Repo registry:${NC}"
@@ -138,7 +144,7 @@ case "$CMD" in
                     }
                     REPO_NAME="${REPO_NAME:-$(basename "$REPO_ROOT")}"
                 fi
-                REMOTE_BASE=$(ssh "$SSH_HOST" bash -c "'
+                REMOTE_BASE=$(ssh $HIVE_SSH_ID "$SSH_HOST" bash -c "'
                     BP=\$HOME
                     CFG=\$HOME/.repo-transfer/config
                     if [ -f \"\$CFG\" ]; then
@@ -149,7 +155,7 @@ case "$CMD" in
                     echo \"\$BP\"
                 '") || REMOTE_BASE="~"
                 echo -e "${BLUE}[$REPO_NAME] Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
-                exec ssh -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
+                exec ssh $HIVE_SSH_ID -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
                 ;;
             help|--help|-h)
                 echo "Usage: hive repo <command>"

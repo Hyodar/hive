@@ -90,6 +90,7 @@ Skills (`prd`, `ralph-tasks`, `ralph`) are installed globally during `hive worke
 | [`hive worker add <name> [--host <host>]`](tools/hive/) | Register an existing worker |
 | `hive worker ls` | List all registered workers |
 | `hive worker rm <name>` | Unregister a worker |
+| [`hive worker set quick-ssh <name>`](tools/hive/) | Set up passwordless SSH to a worker |
 | `hive worker ssh <name>` | SSH into a worker |
 
 ### [Repo Registry & Transfer](tools/repo/)

@@ -16,6 +16,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/repo-registry.sh"
 
+# Quick-ssh key support
+HIVE_SSH_KEY="$HOME/.ssh/hive_ed25519"
+HIVE_SSH_ID=""
+[ -f "$HIVE_SSH_KEY" ] && HIVE_SSH_ID="-i $HIVE_SSH_KEY"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -162,7 +167,7 @@ echo -e "Bundle: ${BUNDLE_SIZE}"
 # Transfer
 REMOTE_BUNDLE="/tmp/${REPO_NAME}-$(date +%s).bundle"
 echo -e "${BLUE}Transferring to $HOST...${NC}"
-scp -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
+scp $HIVE_SSH_ID -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 
 # Apply on remote (let remote's config decide path unless -p was given)
 echo -e "${BLUE}Applying on remote...${NC}"
@@ -170,7 +175,7 @@ RECEIVE_CMD="hive repo receive '$REMOTE_BUNDLE' '$REMOTE_BRANCH'"
 if [ -n "$REMOTE_PATH" ]; then
     RECEIVE_CMD="$RECEIVE_CMD --path '$REMOTE_PATH'"
 fi
-ssh "$HOST" "$RECEIVE_CMD; rm -f '$REMOTE_BUNDLE'"
+ssh $HIVE_SSH_ID "$HOST" "$RECEIVE_CMD; rm -f '$REMOTE_BUNDLE'"
 
 # Record state for future incremental sends
 mkdir -p "$(dirname "$STATE_FILE")"
