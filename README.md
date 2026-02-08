@@ -29,27 +29,34 @@ This SSHes into the machine, installs all AI tools and dependencies, and copies 
 
 ### 3. Send work, get results
 
+Transfer commands use a refspec: `<local_branch>[:<repo_name>][@<remote_branch>]`
+
 ```bash
 cd ~/my-project
-hive repo send agent-vm-1 main     # Push repo to worker (auto-registers as "my-project")
+hive repo send agent-vm-1 main              # main → my-project@main on worker
+hive repo send agent-vm-1 main:myapp-v2     # main → myapp-v2@main on worker
+hive repo send agent-vm-1 main:myapp-v2@dev # main → myapp-v2@dev on worker
 
-hive repo ssh agent-vm-1 # SSH there to e.g. run ralph
+hive repo ssh agent-vm-1            # SSH there to e.g. run ralph
 
-hive repo fetch agent-vm-1 main    # Pull results back
+hive repo fetch agent-vm-1 main             # Fetch my-project@main from worker
 ```
 
-Repos are automatically registered by directory name on first use. If you have multiple copies of the same repo, hive detects the name collision and asks you to pick a unique name:
+Repos are automatically registered per-worker by directory name on first send. If you have multiple copies of the same repo, hive detects the name collision and asks you to pick a unique name:
 
 ```bash
 cd ~/projects/my-project           # Different path, same dir name
 hive repo send agent-vm-1 main
-# [COLLISION] Repo name 'my-project' is already registered for:
+# [COLLISION] Repo 'my-project' on worker 'agent-vm-1' already maps to:
 #   /home/user/my-project
-# Enter a unique name for this repo:
+# Enter a unique name for this repo on 'agent-vm-1':
 # > my-project-v2
 
-# Or register explicitly:
-hive repo add my-project-v2
+# Or specify the name directly in the refspec:
+hive repo send agent-vm-1 main:my-project-v2
+
+# Or pre-register:
+hive repo add agent-vm-1 my-project-v2
 ```
 
 ### Using Ralph
@@ -85,14 +92,16 @@ ralph2 --tool <claude|codex|amp> <iterations>
 
 ### [Repo Registry & Transfer](tools/repo/)
 
+Refspec format: `<local_branch>[:<repo_name>][@<remote_branch>]`
+
 | Command | Description |
 |---------|-------------|
-| [`hive repo add [name]`](tools/repo/) | Register current repo (default: directory name) |
-| `hive repo ls` | List all registered repos |
-| `hive repo rm <name>` | Unregister a repo |
-| [`hive repo send <worker> [branch]`](tools/repo/) | Send current repo to a worker via git bundle |
-| [`hive repo fetch <worker> [branch]`](tools/repo/) | Fetch repo back from a worker |
-| `hive repo ssh <worker>` | SSH into worker at the repo directory |
+| [`hive repo add <worker> [name]`](tools/repo/) | Register current repo on a worker |
+| `hive repo ls [worker]` | List repos (all workers or specific) |
+| `hive repo rm <worker> <name>` | Remove a repo from a worker |
+| [`hive repo send <worker> [refspec]`](tools/repo/) | Send current repo to a worker via git bundle |
+| [`hive repo fetch <worker> [refspec]`](tools/repo/) | Fetch repo back from a worker |
+| `hive repo ssh <worker> [repo_name]` | SSH into worker at the repo directory |
 
 ## 🔧 Worker Tools
 
@@ -118,8 +127,7 @@ All state lives in `/etc/hive/` on the manager:
 | File | Purpose |
 |------|---------|
 | `config.json` | Manager role config |
-| `workers.json` | Registered workers |
-| `repos.json` | Registered repos (name-to-path mapping) |
+| `workers.json` | Registered workers + per-worker repo mappings |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
 
 ## 📋 Requirements

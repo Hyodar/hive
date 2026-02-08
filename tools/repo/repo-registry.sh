@@ -1,18 +1,19 @@
 #!/bin/bash
-# repo-registry.sh - Repo name registry for hive
+# repo-registry.sh - Per-worker repo name registry for hive
 #
-# Source this file to get registry functions, or run directly for add/ls/rm commands.
+# Source this file to get registry + refspec functions, or run directly for CLI commands.
 #
-# Registry lives at /etc/hive/repos.json:
-# {
-#   "repos": {
-#     "myapp": { "name": "myapp", "path": "/home/user/myapp", "added": "..." },
-#     "myapp-v2": { "name": "myapp-v2", "path": "/home/user/projects/myapp", "added": "..." }
-#   }
-# }
+# Repos are tracked per-worker inside /etc/hive/workers.json:
+#   workers.<name>.repos.<repo_name> = "/local/path/to/repo"
+#
+# Refspec format: <local_branch>[:<worker_repo_name>][@<worker_branch>]
+#   main              → local=main,  repo=<basename>, remote=main
+#   main:myapp-v2     → local=main,  repo=myapp-v2,   remote=main
+#   main@dev          → local=main,  repo=<basename>, remote=dev
+#   main:myapp-v2@dev → local=main,  repo=myapp-v2,   remote=dev
 
 HIVE_DIR="${HIVE_DIR:-/etc/hive}"
-REPOS_FILE="$HIVE_DIR/repos.json"
+WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # Colors (safe to re-declare)
 RED='\033[0;31m'
@@ -22,82 +23,139 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-ensure_repos_file() {
-    if [ ! -f "$REPOS_FILE" ]; then
-        # Auto-create if /etc/hive exists (hive was initialized)
-        if [ -d "$HIVE_DIR" ]; then
-            echo '{"repos":{}}' | jq '.' > "$REPOS_FILE" 2>/dev/null || {
-                echo -e "${RED}[ERROR]${NC} Cannot create repos registry at $REPOS_FILE"
-                echo "You may need to run with sudo or run 'hive init' first."
-                return 1
-            }
-        else
-            echo -e "${RED}[ERROR]${NC} Hive not initialized. Run 'hive init' first."
-            return 1
-        fi
-    fi
-}
-
-# Look up a repo by its local path. Returns the registered name or empty string.
-lookup_repo_by_path() {
-    local REPO_PATH="$1"
-    if [ ! -f "$REPOS_FILE" ]; then
-        return
-    fi
-    jq -r --arg path "$REPO_PATH" \
-        '.repos | to_entries[] | select(.value.path == $path) | .key' \
-        "$REPOS_FILE" 2>/dev/null | head -1
-}
-
-# Check if a repo name is already taken. Returns 0 if taken, 1 if available.
-repo_name_taken() {
-    local NAME="$1"
-    if [ ! -f "$REPOS_FILE" ]; then
+ensure_workers_file() {
+    if [ ! -f "$WORKERS_FILE" ]; then
+        echo -e "${RED}[ERROR]${NC} Workers registry not found. Run 'hive init' first." >&2
         return 1
     fi
-    jq -e --arg name "$NAME" '.repos[$name]' "$REPOS_FILE" >/dev/null 2>&1
 }
 
-# Register a repo. Writes to repos.json.
-register_repo() {
-    local NAME="$1"
-    local REPO_PATH="$2"
-    local ADDED
-    ADDED=$(date -Iseconds)
-    jq --arg name "$NAME" --arg path "$REPO_PATH" --arg added "$ADDED" \
-        '.repos[$name] = {"name": $name, "path": $path, "added": $added}' \
-        "$REPOS_FILE" > "$REPOS_FILE.tmp"
-    mv "$REPOS_FILE.tmp" "$REPOS_FILE"
+# ---- Refspec parsing ----
+
+# Parse refspec into PARSED_LOCAL_BRANCH, PARSED_REPO_NAME, PARSED_REMOTE_BRANCH.
+# PARSED_REPO_EXPLICIT is true if the user specified a repo name via :.
+# Call: parse_refspec "<refspec>" "<default_repo_name>"
+parse_refspec() {
+    local REFSPEC="$1"
+    local DEFAULT_REPO="$2"
+
+    PARSED_LOCAL_BRANCH=""
+    PARSED_REPO_NAME="$DEFAULT_REPO"
+    PARSED_REMOTE_BRANCH=""
+    PARSED_REPO_EXPLICIT=false
+
+    if [ -z "$REFSPEC" ]; then
+        return
+    fi
+
+    # Split on @
+    local BEFORE_AT
+    if [[ "$REFSPEC" == *@* ]]; then
+        BEFORE_AT="${REFSPEC%%@*}"
+        PARSED_REMOTE_BRANCH="${REFSPEC#*@}"
+    else
+        BEFORE_AT="$REFSPEC"
+    fi
+
+    # Split before-@ on :
+    if [[ "$BEFORE_AT" == *:* ]]; then
+        PARSED_LOCAL_BRANCH="${BEFORE_AT%%:*}"
+        PARSED_REPO_NAME="${BEFORE_AT#*:}"
+        PARSED_REPO_EXPLICIT=true
+    else
+        PARSED_LOCAL_BRANCH="$BEFORE_AT"
+    fi
+
+    # Default remote branch = local branch
+    if [ -z "$PARSED_REMOTE_BRANCH" ]; then
+        PARSED_REMOTE_BRANCH="$PARSED_LOCAL_BRANCH"
+    fi
 }
 
-# Resolve the repo name for the current git repo.
-# Auto-registers if not registered. Handles collisions interactively.
-# Sets REPO_REGISTERED_NAME on success, exits on failure.
-resolve_repo_name() {
-    local REPO_ROOT="$1"
-    local DEFAULT_NAME
-    DEFAULT_NAME=$(basename "$REPO_ROOT")
+# ---- Per-worker repo registry ----
 
-    ensure_repos_file || exit 1
+# Look up a repo name on a worker. Returns the local path or empty string.
+lookup_worker_repo() {
+    local WORKER="$1" REPO_NAME="$2"
+    jq -r --arg w "$WORKER" --arg r "$REPO_NAME" \
+        '.workers[$w].repos[$r] // empty' "$WORKERS_FILE" 2>/dev/null
+}
 
-    # Check if this path is already registered
-    local EXISTING_NAME
-    EXISTING_NAME=$(lookup_repo_by_path "$REPO_ROOT")
-    if [ -n "$EXISTING_NAME" ]; then
-        REPO_REGISTERED_NAME="$EXISTING_NAME"
+# Find which repo name on a worker points to a given local path.
+lookup_worker_repo_by_path() {
+    local WORKER="$1" LOCAL_PATH="$2"
+    jq -r --arg w "$WORKER" --arg p "$LOCAL_PATH" \
+        '.workers[$w].repos // {} | to_entries[] | select(.value == $p) | .key' \
+        "$WORKERS_FILE" 2>/dev/null | head -1
+}
+
+# Register a repo name on a worker (creates .repos if absent).
+register_worker_repo() {
+    local WORKER="$1" REPO_NAME="$2" LOCAL_PATH="$3"
+    jq --arg w "$WORKER" --arg r "$REPO_NAME" --arg p "$LOCAL_PATH" \
+        '.workers[$w].repos //= {} | .workers[$w].repos[$r] = $p' \
+        "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+}
+
+# Remove a repo from a worker.
+remove_worker_repo() {
+    local WORKER="$1" REPO_NAME="$2"
+    jq --arg w "$WORKER" --arg r "$REPO_NAME" \
+        'del(.workers[$w].repos[$r])' \
+        "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+}
+
+# Resolve repo name for sending to a worker.
+# Checks for collisions and auto-registers.
+# Sets RESOLVED_REPO_NAME on success.
+# Arguments: <worker> <repo_name> <local_path> <explicit: true|false>
+resolve_worker_repo_for_send() {
+    local WORKER="$1" REPO_NAME="$2" LOCAL_PATH="$3" EXPLICIT="$4"
+
+    ensure_workers_file || return 1
+
+    # Verify worker exists
+    if ! jq -e --arg w "$WORKER" '.workers[$w]' "$WORKERS_FILE" >/dev/null 2>&1; then
+        echo -e "${YELLOW}[WARN]${NC} Worker '$WORKER' not in registry, skipping repo registration" >&2
+        RESOLVED_REPO_NAME="$REPO_NAME"
         return 0
     fi
 
-    # Not registered yet. Try the default name (directory basename).
-    if repo_name_taken "$DEFAULT_NAME"; then
-        # Collision: same name, different path
-        local OTHER_PATH
-        OTHER_PATH=$(jq -r --arg name "$DEFAULT_NAME" '.repos[$name].path' "$REPOS_FILE")
-        echo -e "${YELLOW}[COLLISION]${NC} Repo name '${DEFAULT_NAME}' is already registered for:" >&2
-        echo -e "  ${OTHER_PATH}" >&2
+    # Check if this local path is already registered under a different name on this worker
+    local EXISTING_NAME
+    EXISTING_NAME=$(lookup_worker_repo_by_path "$WORKER" "$LOCAL_PATH")
+    if [ -n "$EXISTING_NAME" ] && [ "$EXISTING_NAME" != "$REPO_NAME" ] && [ "$EXPLICIT" = false ]; then
+        # Path already registered under a different name — use the existing name
+        RESOLVED_REPO_NAME="$EXISTING_NAME"
+        return 0
+    fi
+
+    local EXISTING_PATH
+    EXISTING_PATH=$(lookup_worker_repo "$WORKER" "$REPO_NAME")
+
+    if [ -n "$EXISTING_PATH" ]; then
+        if [ "$EXISTING_PATH" = "$LOCAL_PATH" ]; then
+            # Same path, same name — all good
+            RESOLVED_REPO_NAME="$REPO_NAME"
+            return 0
+        fi
+
+        # Collision: name taken by different path
+        if [ "$EXPLICIT" = true ]; then
+            echo -e "${RED}[ERROR]${NC} Repo '${REPO_NAME}' on worker '${WORKER}' already maps to:" >&2
+            echo -e "  ${EXISTING_PATH}" >&2
+            echo -e "This repo is at: ${LOCAL_PATH}" >&2
+            echo -e "Use a different name in the refspec (e.g. main:other-name)" >&2
+            return 1
+        fi
+
+        echo -e "${YELLOW}[COLLISION]${NC} Repo '${REPO_NAME}' on worker '${WORKER}' already maps to:" >&2
+        echo -e "  ${EXISTING_PATH}" >&2
         echo "" >&2
-        echo "This repo is at: ${REPO_ROOT}" >&2
-        echo "Enter a unique name for this repo (or Ctrl+C to cancel):" >&2
+        echo "This repo is at: ${LOCAL_PATH}" >&2
+        echo "Enter a unique name for this repo on '${WORKER}' (or Ctrl+C to cancel):" >&2
 
         while true; do
             read -p "> " NEW_NAME </dev/tty
@@ -105,146 +163,182 @@ resolve_repo_name() {
                 echo "Name cannot be empty." >&2
                 continue
             fi
-            if repo_name_taken "$NEW_NAME"; then
-                local TAKEN_PATH
-                TAKEN_PATH=$(jq -r --arg name "$NEW_NAME" '.repos[$name].path' "$REPOS_FILE")
-                echo "Name '${NEW_NAME}' is also taken (${TAKEN_PATH}). Try another:" >&2
+            local CHECK
+            CHECK=$(lookup_worker_repo "$WORKER" "$NEW_NAME")
+            if [ -n "$CHECK" ] && [ "$CHECK" != "$LOCAL_PATH" ]; then
+                echo "Name '${NEW_NAME}' is also taken (${CHECK}). Try another:" >&2
                 continue
             fi
+            REPO_NAME="$NEW_NAME"
             break
         done
-
-        register_repo "$NEW_NAME" "$REPO_ROOT"
-        echo -e "${GREEN}[OK]${NC} Registered repo '${NEW_NAME}' -> ${REPO_ROOT}" >&2
-        REPO_REGISTERED_NAME="$NEW_NAME"
-    else
-        # Name is available, register automatically
-        register_repo "$DEFAULT_NAME" "$REPO_ROOT"
-        echo -e "${GREEN}[OK]${NC} Registered repo '${DEFAULT_NAME}' -> ${REPO_ROOT}" >&2
-        REPO_REGISTERED_NAME="$DEFAULT_NAME"
     fi
+
+    # Register
+    register_worker_repo "$WORKER" "$REPO_NAME" "$LOCAL_PATH"
+    echo -e "${GREEN}[OK]${NC} Registered repo '${REPO_NAME}' on worker '${WORKER}' -> ${LOCAL_PATH}" >&2
+    RESOLVED_REPO_NAME="$REPO_NAME"
 }
 
 # ---- CLI commands (when run directly) ----
 
-repo_add() {
-    local NAME=""
+repo_add_cmd() {
+    local WORKER="" NAME=""
     while [[ $# -gt 0 ]]; do
         case $1 in
             --help|-h)
-                echo "Usage: hive repo add [name]"
+                echo "Usage: hive repo add <worker> [name]"
                 echo ""
-                echo "Register the current git repo in the hive registry."
-                echo "If no name is given, uses the directory name."
-                echo "If the name collides, you'll be asked for a new one."
+                echo "Register the current git repo on a worker."
+                echo "Default name is the directory basename."
                 exit 0
                 ;;
             -*)
                 echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
             *)
-                if [ -z "$NAME" ]; then NAME="$1"
+                if [ -z "$WORKER" ]; then WORKER="$1"
+                elif [ -z "$NAME" ]; then NAME="$1"
                 else echo -e "${RED}Too many arguments${NC}"; exit 1
                 fi
                 shift ;;
         esac
     done
 
+    if [ -z "$WORKER" ]; then
+        echo -e "${RED}[ERROR]${NC} Worker name is required"
+        echo "Usage: hive repo add <worker> [name]"
+        exit 1
+    fi
+
     REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
         echo -e "${RED}[ERROR]${NC} Not in a git repository"
         exit 1
     }
 
-    ensure_repos_file || exit 1
+    ensure_workers_file || exit 1
 
-    # Check if this path is already registered
-    local EXISTING_NAME
-    EXISTING_NAME=$(lookup_repo_by_path "$REPO_ROOT")
-    if [ -n "$EXISTING_NAME" ]; then
-        echo -e "${YELLOW}[SKIP]${NC} This repo is already registered as '${EXISTING_NAME}'"
-        return 0
+    if ! jq -e --arg w "$WORKER" '.workers[$w]' "$WORKERS_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}[ERROR]${NC} Worker '$WORKER' not found"
+        exit 1
     fi
 
-    # Use given name or default to basename
-    if [ -z "$NAME" ]; then
-        NAME=$(basename "$REPO_ROOT")
-    fi
+    NAME="${NAME:-$(basename "$REPO_ROOT")}"
+    local EXPLICIT=false
+    # If user gave a name argument, treat it as explicit
+    [[ $# -ge 1 ]] || EXPLICIT=false
 
-    # Check for collision
-    if repo_name_taken "$NAME"; then
-        local OTHER_PATH
-        OTHER_PATH=$(jq -r --arg name "$NAME" '.repos[$name].path' "$REPOS_FILE")
-        echo -e "${YELLOW}[COLLISION]${NC} Repo name '${NAME}' is already registered for:"
-        echo "  ${OTHER_PATH}"
+    resolve_worker_repo_for_send "$WORKER" "$NAME" "$REPO_ROOT" "$EXPLICIT"
+}
+
+repo_ls_cmd() {
+    local WORKER=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --help|-h)
+                echo "Usage: hive repo ls [worker]"
+                echo ""
+                echo "List repos registered on workers."
+                echo "If worker is given, only show that worker's repos."
+                exit 0
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
+            *)
+                if [ -z "$WORKER" ]; then WORKER="$1"
+                else echo -e "${RED}Too many arguments${NC}"; exit 1
+                fi
+                shift ;;
+        esac
+    done
+
+    ensure_workers_file || exit 1
+
+    if [ -n "$WORKER" ]; then
+        if ! jq -e --arg w "$WORKER" '.workers[$w]' "$WORKERS_FILE" >/dev/null 2>&1; then
+            echo -e "${RED}[ERROR]${NC} Worker '$WORKER' not found"
+            exit 1
+        fi
+        local COUNT
+        COUNT=$(jq --arg w "$WORKER" '.workers[$w].repos // {} | length' "$WORKERS_FILE")
+        if [ "$COUNT" -eq 0 ]; then
+            echo "No repos registered on worker '$WORKER'."
+            return 0
+        fi
+        echo -e "${CYAN}Repos on $WORKER ($COUNT):${NC}"
         echo ""
-        echo "This repo is at: ${REPO_ROOT}"
-        echo "Enter a unique name for this repo (or Ctrl+C to cancel):"
-
-        while true; do
-            read -p "> " NAME
-            if [ -z "$NAME" ]; then
-                echo "Name cannot be empty."
-                continue
+        printf "  %-25s %s\n" "REPO NAME" "LOCAL PATH"
+        printf "  %-25s %s\n" "---------" "----------"
+        jq -r --arg w "$WORKER" \
+            '.workers[$w].repos // {} | to_entries[] | "\(.key)\t\(.value)"' "$WORKERS_FILE" \
+            | while IFS=$'\t' read -r name path; do
+                printf "  %-25s %s\n" "$name" "$path"
+            done
+        echo ""
+    else
+        # Show all workers
+        local HAS_REPOS=false
+        jq -r '.workers | to_entries[] | .key' "$WORKERS_FILE" | while read -r w; do
+            local COUNT
+            COUNT=$(jq --arg w "$w" '.workers[$w].repos // {} | length' "$WORKERS_FILE")
+            if [ "$COUNT" -gt 0 ]; then
+                HAS_REPOS=true
+                echo -e "${CYAN}$w${NC} ($COUNT repos):"
+                jq -r --arg w "$w" \
+                    '.workers[$w].repos // {} | to_entries[] | "\(.key)\t\(.value)"' "$WORKERS_FILE" \
+                    | while IFS=$'\t' read -r name path; do
+                        printf "  %-25s %s\n" "$name" "$path"
+                    done
+                echo ""
             fi
-            if repo_name_taken "$NAME"; then
-                local TAKEN_PATH
-                TAKEN_PATH=$(jq -r --arg name "$NAME" '.repos[$name].path' "$REPOS_FILE")
-                echo "Name '${NAME}' is also taken (${TAKEN_PATH}). Try another:"
-                continue
-            fi
-            break
         done
+        # Check if anything was printed (subshell issue — just check total)
+        local TOTAL
+        TOTAL=$(jq '[.workers[].repos // {} | length] | add // 0' "$WORKERS_FILE")
+        if [ "$TOTAL" -eq 0 ]; then
+            echo "No repos registered on any worker."
+            echo "Repos are auto-registered on first 'hive repo send'."
+        fi
     fi
-
-    register_repo "$NAME" "$REPO_ROOT"
-    echo -e "${GREEN}[OK]${NC} Registered repo '${NAME}' -> ${REPO_ROOT}"
 }
 
-repo_ls() {
-    ensure_repos_file || exit 1
+repo_rm_cmd() {
+    local WORKER="" NAME=""
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --help|-h)
+                echo "Usage: hive repo rm <worker> <name>"
+                echo ""
+                echo "Remove a repo from a worker's registry."
+                exit 0
+                ;;
+            -*)
+                echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
+            *)
+                if [ -z "$WORKER" ]; then WORKER="$1"
+                elif [ -z "$NAME" ]; then NAME="$1"
+                else echo -e "${RED}Too many arguments${NC}"; exit 1
+                fi
+                shift ;;
+        esac
+    done
 
-    local COUNT
-    COUNT=$(jq '.repos | length' "$REPOS_FILE")
-
-    if [ "$COUNT" -eq 0 ]; then
-        echo "No repos registered."
-        echo "Use 'hive repo add [name]' from inside a git repo, or just run 'hive repo send'."
-        return 0
-    fi
-
-    echo -e "${CYAN}Registered repos ($COUNT):${NC}"
-    echo ""
-    printf "  %-20s %-50s %s\n" "NAME" "PATH" "ADDED"
-    printf "  %-20s %-50s %s\n" "----" "----" "-----"
-    jq -r '.repos | to_entries[] | "\(.value.name)\t\(.value.path)\t\(.value.added)"' "$REPOS_FILE" \
-        | while IFS=$'\t' read -r name path added; do
-            printf "  %-20s %-50s %s\n" "$name" "$path" "$added"
-        done
-    echo ""
-}
-
-repo_rm() {
-    local NAME="$1"
-
-    if [ -z "$NAME" ]; then
-        echo -e "${RED}[ERROR]${NC} Repo name is required"
-        echo "Usage: hive repo rm <name>"
+    if [ -z "$WORKER" ] || [ -z "$NAME" ]; then
+        echo -e "${RED}[ERROR]${NC} Worker and repo name are required"
+        echo "Usage: hive repo rm <worker> <name>"
         exit 1
     fi
 
-    ensure_repos_file || exit 1
+    ensure_workers_file || exit 1
 
-    if ! repo_name_taken "$NAME"; then
-        echo -e "${RED}[ERROR]${NC} Repo '$NAME' not found"
+    local EXISTING
+    EXISTING=$(lookup_worker_repo "$WORKER" "$NAME")
+    if [ -z "$EXISTING" ]; then
+        echo -e "${RED}[ERROR]${NC} Repo '$NAME' not found on worker '$WORKER'"
         exit 1
     fi
 
-    local REPO_PATH
-    REPO_PATH=$(jq -r --arg name "$NAME" '.repos[$name].path' "$REPOS_FILE")
-
-    jq --arg name "$NAME" 'del(.repos[$name])' "$REPOS_FILE" > "$REPOS_FILE.tmp"
-    mv "$REPOS_FILE.tmp" "$REPOS_FILE"
-
-    echo -e "${GREEN}[OK]${NC} Repo '${NAME}' removed (was ${REPO_PATH})"
+    remove_worker_repo "$WORKER" "$NAME"
+    echo -e "${GREEN}[OK]${NC} Repo '${NAME}' removed from worker '${WORKER}' (was ${EXISTING})"
 }
 
 # If run directly (not sourced), route subcommands
@@ -253,21 +347,21 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     shift 2>/dev/null || true
 
     case "$SUBCMD" in
-        add)     repo_add "$@" ;;
-        ls|list) repo_ls "$@" ;;
-        rm|remove) repo_rm "$@" ;;
+        add)     repo_add_cmd "$@" ;;
+        ls|list) repo_ls_cmd "$@" ;;
+        rm|remove) repo_rm_cmd "$@" ;;
         --help|-h|help)
             echo "Usage: hive repo <command>"
             echo ""
             echo "Registry commands:"
-            echo "  add [name]    Register current repo (default name: directory name)"
-            echo "  ls            List registered repos"
-            echo "  rm <name>     Remove a repo from registry"
+            echo "  add <worker> [name]       Register current repo on a worker"
+            echo "  ls [worker]               List repos (all workers or specific)"
+            echo "  rm <worker> <name>        Remove a repo from a worker"
             echo ""
-            echo "Transfer commands:"
-            echo "  send <worker> [branch]    Send repo to a worker"
-            echo "  fetch <worker> [branch]   Fetch repo from a worker"
-            echo "  ssh <worker>              SSH into worker at repo directory"
+            echo "Transfer commands (refspec: <local_branch>[:<repo_name>][@<remote_branch>]):"
+            echo "  send <worker> [refspec]   Send repo to a worker"
+            echo "  fetch <worker> [refspec]  Fetch repo from a worker"
+            echo "  ssh <worker> [repo_name]  SSH into worker at repo directory"
             ;;
         *)
             echo -e "${RED}Unknown repo command: ${SUBCMD:-<none>}${NC}"

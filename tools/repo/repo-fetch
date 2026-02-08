@@ -1,7 +1,8 @@
 #!/bin/bash
 # repo-fetch - Fetch a git branch from a remote machine using git bundles over SSH
 #
-# Usage: repo-fetch [options] <host> [branch]
+# Usage: repo-fetch [options] <host> [refspec]
+#   Refspec: <local_branch>[:<repo_name>][@<remote_branch>]
 #   -p, --path <path>   Remote repo path (overrides remote config)
 #   -f, --full           Force full bundle (skip incremental)
 #   -h, --help           Show help
@@ -22,7 +23,7 @@ NC='\033[0m'
 
 usage() {
     cat <<EOF
-Usage: repo-fetch [options] <host> [branch]
+Usage: repo-fetch [options] <host> [refspec]
 
 Fetch a git branch from a remote machine via git bundle over SSH.
 The remote creates a bundle and sends it back for local application.
@@ -30,9 +31,15 @@ The remote creates a bundle and sends it back for local application.
 The remote machine's ~/.repo-transfer/config controls where repos
 live (base_path setting, defaults to ~).
 
+Refspec format: <local_branch>[:<repo_name>][@<remote_branch>]
+  main              Fetch remote 'main' from repo (dir name) into local 'main'
+  main:myapp-v2     Fetch remote 'main' from 'myapp-v2' into local 'main'
+  main@dev          Fetch remote 'dev' from repo (dir name) into local 'main'
+  main:myapp-v2@dev Fetch remote 'dev' from 'myapp-v2' into local 'main'
+
 Arguments:
   host      Remote hostname (Tailscale name, IP, or user@host)
-  branch    Branch to fetch (default: current branch)
+  refspec   What to fetch (default: current branch, same repo name + branch)
 
 Options:
   -p, --path <path>   Remote repo path (overrides remote config)
@@ -41,7 +48,9 @@ Options:
 
 Examples:
   repo-fetch agent-vm
-  repo-fetch agent-vm feature/login
+  repo-fetch agent-vm main
+  repo-fetch agent-vm main:myapp-v2
+  repo-fetch agent-vm main:myapp-v2@dev
   repo-fetch agent-vm main -p ~/projects/myapp
   repo-fetch user@10.0.0.5 dev --full
 EOF
@@ -50,7 +59,7 @@ EOF
 FULL=false
 REMOTE_PATH=""
 HOST=""
-BRANCH=""
+REFSPEC=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -62,7 +71,7 @@ while [[ $# -gt 0 ]]; do
             usage; exit 1 ;;
         *)
             if [ -z "$HOST" ]; then HOST="$1"
-            elif [ -z "$BRANCH" ]; then BRANCH="$1"
+            elif [ -z "$REFSPEC" ]; then REFSPEC="$1"
             else echo -e "${RED}Too many arguments${NC}"; usage; exit 1
             fi
             shift ;;
@@ -81,27 +90,44 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
     exit 1
 }
 
-# Resolve registered repo name (auto-registers on first use, handles collisions)
-resolve_repo_name "$REPO_ROOT"
-REPO_NAME="$REPO_REGISTERED_NAME"
+DEFAULT_REPO_NAME=$(basename "$REPO_ROOT")
 
-# Default to current branch
-if [ -z "$BRANCH" ]; then
-    BRANCH=$(git branch --show-current 2>/dev/null) || {
+# Parse refspec
+parse_refspec "$REFSPEC" "$DEFAULT_REPO_NAME"
+
+# Default local branch to current branch
+LOCAL_BRANCH="${PARSED_LOCAL_BRANCH}"
+if [ -z "$LOCAL_BRANCH" ]; then
+    LOCAL_BRANCH=$(git branch --show-current 2>/dev/null) || {
         echo -e "${RED}Error: not on a branch (detached HEAD) and no branch specified${NC}"
         exit 1
     }
-    if [ -z "$BRANCH" ]; then
+    if [ -z "$LOCAL_BRANCH" ]; then
         echo -e "${RED}Error: not on a branch (detached HEAD) and no branch specified${NC}"
         exit 1
     fi
 fi
 
-echo -e "${BLUE}Repo:${NC} ${REPO_NAME} (${REPO_ROOT})"
+REPO_NAME="$PARSED_REPO_NAME"
+REMOTE_BRANCH="${PARSED_REMOTE_BRANCH:-$LOCAL_BRANCH}"
+
+# If worker name available, resolve repo name from registry (use existing mapping)
+if [ -n "${HIVE_WORKER_NAME:-}" ]; then
+    ensure_workers_file 2>/dev/null && {
+        # If no explicit repo name, check if this path is already registered under a name
+        if [ "$PARSED_REPO_EXPLICIT" = false ]; then
+            EXISTING_NAME=$(lookup_worker_repo_by_path "$HIVE_WORKER_NAME" "$REPO_ROOT")
+            if [ -n "$EXISTING_NAME" ]; then
+                REPO_NAME="$EXISTING_NAME"
+            fi
+        fi
+    }
+fi
+
+echo -e "${BLUE}Fetching${NC} ${REPO_NAME}@${REMOTE_BRANCH} → ${LOCAL_BRANCH}${HIVE_WORKER_NAME:+ from ${HIVE_WORKER_NAME}}"
 
 # Resolve remote path: use -p if given, otherwise read remote config
 if [ -z "$REMOTE_PATH" ]; then
-    echo -e "${BLUE}Resolving remote repo path...${NC}"
     REMOTE_BASE=$(ssh "$HOST" bash -c "'
         BP=\$HOME
         CFG=\$HOME/.repo-transfer/config
@@ -120,8 +146,8 @@ fi
 
 # Determine local basis for incremental fetch
 LOCAL_TIP=""
-if [ "$FULL" = false ] && git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
-    LOCAL_TIP=$(git rev-parse "$BRANCH")
+if [ "$FULL" = false ] && git rev-parse --verify "$LOCAL_BRANCH" >/dev/null 2>&1; then
+    LOCAL_TIP=$(git rev-parse "$LOCAL_BRANCH")
 fi
 
 # Ask remote to create the bundle
@@ -134,24 +160,24 @@ if [ -n "$LOCAL_TIP" ]; then
     BUNDLE_CREATED=$(ssh "$HOST" bash -s <<REMOTEOF
         set -e
         cd "$REMOTE_PATH" 2>/dev/null || { echo "REPO_NOT_FOUND"; exit 0; }
-        git rev-parse --verify "$BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
+        git rev-parse --verify "$REMOTE_BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
 
-        REMOTE_TIP=\$(git rev-parse "$BRANCH")
+        REMOTE_TIP=\$(git rev-parse "$REMOTE_BRANCH")
         if [ "\$REMOTE_TIP" = "$LOCAL_TIP" ]; then
             echo "UP_TO_DATE"
             exit 0
         fi
 
         # Try incremental
-        if git merge-base --is-ancestor "$LOCAL_TIP" "$BRANCH" 2>/dev/null; then
-            git bundle create "$REMOTE_BUNDLE" "$LOCAL_TIP..$BRANCH" -- 2>/dev/null && {
+        if git merge-base --is-ancestor "$LOCAL_TIP" "$REMOTE_BRANCH" 2>/dev/null; then
+            git bundle create "$REMOTE_BUNDLE" "$LOCAL_TIP..$REMOTE_BRANCH" -- 2>/dev/null && {
                 echo "INCREMENTAL"
                 exit 0
             }
         fi
 
         # Fall back to full
-        git bundle create "$REMOTE_BUNDLE" "$BRANCH" -- 2>/dev/null && {
+        git bundle create "$REMOTE_BUNDLE" "$REMOTE_BRANCH" -- 2>/dev/null && {
             echo "FULL"
             exit 0
         }
@@ -164,8 +190,8 @@ else
     BUNDLE_CREATED=$(ssh "$HOST" bash -s <<REMOTEOF
         set -e
         cd "$REMOTE_PATH" 2>/dev/null || { echo "REPO_NOT_FOUND"; exit 0; }
-        git rev-parse --verify "$BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
-        git bundle create "$REMOTE_BUNDLE" "$BRANCH" -- 2>/dev/null && {
+        git rev-parse --verify "$REMOTE_BRANCH" >/dev/null 2>&1 || { echo "BRANCH_NOT_FOUND"; exit 0; }
+        git bundle create "$REMOTE_BUNDLE" "$REMOTE_BRANCH" -- 2>/dev/null && {
             echo "FULL"
             exit 0
         }
@@ -177,13 +203,13 @@ fi
 # Handle remote errors
 case "$BUNDLE_CREATED" in
     REPO_NOT_FOUND)
-        echo -e "${RED}Error: repo not found at $REMOTE_PATH on $HOST${NC}"
+        echo -e "${RED}Error: repo '$REPO_NAME' not found at $REMOTE_PATH on $HOST${NC}"
         exit 1 ;;
     BRANCH_NOT_FOUND)
-        echo -e "${RED}Error: branch '$BRANCH' not found on remote${NC}"
+        echo -e "${RED}Error: branch '$REMOTE_BRANCH' not found on remote repo '$REPO_NAME'${NC}"
         exit 1 ;;
     UP_TO_DATE)
-        echo -e "${YELLOW}Already up to date.${NC}"
+        echo -e "${YELLOW}[$REPO_NAME] Already up to date.${NC}"
         exit 0 ;;
     BUNDLE_FAILED)
         echo -e "${RED}Error: failed to create bundle on remote${NC}"
@@ -211,34 +237,34 @@ echo -e "Bundle: ${BUNDLE_SIZE}"
 # Apply locally
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
 
-if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+if git rev-parse --verify "$LOCAL_BRANCH" >/dev/null 2>&1; then
     # Branch exists locally
-    if [ "$CURRENT_BRANCH" = "$BRANCH" ]; then
+    if [ "$CURRENT_BRANCH" = "$LOCAL_BRANCH" ]; then
         # We're on the target branch
         if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
             echo -e "${YELLOW}Warning: uncommitted changes - stashing${NC}"
             git stash push -m "repo-fetch auto-stash $(date +%Y%m%d-%H%M%S)"
         fi
-        git fetch "$LOCAL_BUNDLE" "$BRANCH"
+        git fetch "$LOCAL_BUNDLE" "$REMOTE_BRANCH"
         if git merge --ff-only FETCH_HEAD 2>/dev/null; then
-            echo -e "${GREEN}Fast-forwarded '$BRANCH'${NC}"
+            echo -e "${GREEN}Fast-forwarded '$LOCAL_BRANCH'${NC}"
         else
             echo -e "${YELLOW}Cannot fast-forward. Resetting to remote state...${NC}"
             git reset --hard FETCH_HEAD
-            echo -e "${GREEN}Reset '$BRANCH' to remote state${NC}"
+            echo -e "${GREEN}Reset '$LOCAL_BRANCH' to remote state${NC}"
         fi
     else
         # On a different branch - update the ref
-        git fetch "$LOCAL_BUNDLE" "$BRANCH:$BRANCH"
-        git checkout "$BRANCH"
-        echo -e "${GREEN}Updated and checked out '$BRANCH'${NC}"
+        git fetch "$LOCAL_BUNDLE" "$REMOTE_BRANCH:$LOCAL_BRANCH"
+        git checkout "$LOCAL_BRANCH"
+        echo -e "${GREEN}Updated and checked out '$LOCAL_BRANCH'${NC}"
     fi
 else
     # Branch doesn't exist locally - create it
-    git fetch "$LOCAL_BUNDLE" "$BRANCH:$BRANCH"
-    git checkout "$BRANCH"
-    echo -e "${GREEN}Created and checked out '$BRANCH'${NC}"
+    git fetch "$LOCAL_BUNDLE" "$REMOTE_BRANCH:$LOCAL_BRANCH"
+    git checkout "$LOCAL_BRANCH"
+    echo -e "${GREEN}Created and checked out '$LOCAL_BRANCH'${NC}"
 fi
 
-NEW_TIP=$(git rev-parse "$BRANCH")
-echo -e "${GREEN}[$REPO_NAME] Fetched '$BRANCH' ($NEW_TIP) from $HOST:$REMOTE_PATH${NC}"
+NEW_TIP=$(git rev-parse "$LOCAL_BRANCH")
+echo -e "${GREEN}[$REPO_NAME] Fetched ${REPO_NAME}@${REMOTE_BRANCH} → ${LOCAL_BRANCH} ($NEW_TIP) from $HOST:$REMOTE_PATH${NC}"
