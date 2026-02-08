@@ -303,7 +303,7 @@ mkdir -p "$CONFIG_DIR/ralph2/skills/prd"
 mkdir -p "$CONFIG_DIR/ralph2/skills/ralph"
 mkdir -p "$CONFIG_DIR/ralph2/skills/ralph-tasks"
 
-# Install hive (needed for repo receive)
+# Install hive (needed for repo apply)
 cp -r "$SCRIPT_DIR/tools/hive" "$CONFIG_DIR/tools/"
 cp -r "$SCRIPT_DIR/tools/repo" "$CONFIG_DIR/tools/"
 cp "$SCRIPT_DIR/hive" "$BIN_DIR/hive"

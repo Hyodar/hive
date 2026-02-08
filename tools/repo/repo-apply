@@ -1,8 +1,8 @@
 #!/bin/bash
-# repo-receive - Apply a git bundle to a local repository
+# repo-apply - Apply a git bundle to a local repository
 # Used by repo-send (via SSH) or standalone.
 #
-# Usage: repo-receive <bundle-file> <branch> [options]
+# Usage: repo-apply <bundle-file> <branch> [options]
 #   -p, --path <path>   Target repo path (default: <base_path>/<repo-name>)
 #   -h, --help          Show help
 #
@@ -39,7 +39,7 @@ load_config() {
 usage() {
     load_config
     cat <<EOF
-Usage: repo-receive [options] <bundle-file> <branch>
+Usage: repo-apply [options] <bundle-file> <branch>
 
 Apply a git bundle to a local repository. If the repo doesn't exist,
 it is created from the bundle. Otherwise, the branch is updated.
@@ -56,8 +56,8 @@ Config (~/.repo-transfer/config):
   base_path=~          Base directory for repos (default: ~)
 
 Examples:
-  repo-receive /tmp/myrepo.bundle main
-  repo-receive /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
+  repo-apply /tmp/myrepo.bundle main
+  repo-apply /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
 EOF
 }
 
@@ -137,7 +137,7 @@ else
         # We're on the target branch - check for uncommitted changes
         if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
             echo -e "${YELLOW}Warning: uncommitted changes on '$BRANCH' - stashing them${NC}"
-            git stash push -m "repo-receive auto-stash $(date +%Y%m%d-%H%M%S)"
+            git stash push -m "repo-apply auto-stash $(date +%Y%m%d-%H%M%S)"
         fi
 
         # Fetch to FETCH_HEAD, then fast-forward merge
