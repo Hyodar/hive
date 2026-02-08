@@ -171,7 +171,7 @@ scp $HIVE_SSH_ID -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 
 # Apply on remote (let remote's config decide path unless -p was given)
 echo -e "${BLUE}Applying on remote...${NC}"
-RECEIVE_CMD="hive repo receive '$REMOTE_BUNDLE' '$REMOTE_BRANCH'"
+RECEIVE_CMD="hive repo apply '$REMOTE_BUNDLE' '$REMOTE_BRANCH'"
 if [ -n "$REMOTE_PATH" ]; then
     RECEIVE_CMD="$RECEIVE_CMD --path '$REMOTE_PATH'"
 fi

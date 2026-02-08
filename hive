@@ -121,7 +121,7 @@ case "$CMD" in
                 done
                 exec bash "$HIVE_TOOLS/repo/repo-$SUBCMD" "${RESOLVED_ARGS[@]}"
                 ;;
-            receive) exec bash "$HIVE_TOOLS/repo/repo-receive" "$@" ;;
+            apply) exec bash "$HIVE_TOOLS/repo/repo-apply" "$@" ;;
             ssh)
                 WORKER="${1:-}"
                 if [ -z "$WORKER" ]; then

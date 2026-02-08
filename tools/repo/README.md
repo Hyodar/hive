@@ -36,14 +36,17 @@ repo-fetch user@10.0.0.5 dev --full
 | `-p, --path <path>` | Remote repo path (overrides remote config) |
 | `-f, --full` | Force full bundle (skip incremental) |
 
-### `repo-receive`
+### `repo-apply`
 
 Apply a git bundle to a local repository. Used internally by `repo-send` via SSH, but can also be run standalone.
 
+Branch spec: `<bundle-branch>[:<local-branch>]` — maps the bundle's branch to a different local name.
+
 ```bash
-repo-receive <bundle-file> <branch>
-repo-receive /tmp/myrepo.bundle main
-repo-receive /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
+repo-apply <bundle-file> <branch-spec>
+repo-apply /tmp/myrepo.bundle main
+repo-apply /tmp/myrepo.bundle main:dev
+repo-apply /tmp/myrepo.bundle feature/auth -p ~/projects/myrepo
 ```
 
 | Option | Description |
@@ -62,6 +65,6 @@ base_path=~/projects    # Base directory for repos (default: ~)
 
 1. **Send** creates a git bundle (incremental if possible) from the local branch
 2. Transfers the bundle to the remote via `scp`
-3. **Receive** applies the bundle on the remote — cloning if the repo doesn't exist, or updating the branch if it does
+3. **Apply** applies the bundle on the remote — cloning if the repo doesn't exist, or updating the branch if it does
 4. **Fetch** reverses the flow — the remote creates a bundle and sends it back
 5. State is tracked in `~/.repo-transfer/send/` so subsequent sends are incremental
