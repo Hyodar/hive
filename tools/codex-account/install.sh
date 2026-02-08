@@ -8,7 +8,7 @@ set -euo pipefail
 
 TOOL_NAME="codex-account"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-REPO_URL="https://raw.githubusercontent.com/Hyodar/hive/main/tools/codex-account/codex-account"
+REPO_URL="https://raw.githubusercontent.com/Hyodar/hive/master/tools/codex-account/codex-account"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
