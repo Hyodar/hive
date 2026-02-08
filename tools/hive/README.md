@@ -75,7 +75,7 @@ hive worker rm agent-vm-2
 
 ### `hive worker set quick-ssh`
 
-Set up or remove passwordless SSH to a worker. Generates an unencrypted per-worker SSH key in `/etc/hive/ssh/` and copies it to the worker. Uses the worker's configured `ssh_key` (from `--ssh-key` on add/setup) to authenticate the initial copy. After this, all hive SSH commands use the hive key automatically.
+Set up or remove passwordless SSH to a worker. Generates an unencrypted per-worker quick-ssh key in `/etc/hive/ssh/` and copies it to the worker. Uses the worker's configured `ssh_key` (from `--ssh-key` on add/setup) to authenticate the initial copy. After this, all hive SSH commands use the quick-ssh key automatically.
 
 ```bash
 # Enable — generates key and copies to worker
@@ -86,7 +86,7 @@ hive worker set quick-ssh --name agent-vm-1 false
 ```
 
 SSH identity resolution order (used by all hive SSH commands):
-1. Per-worker hive key (`/etc/hive/ssh/<worker>_ed25519`) — if quick-ssh is enabled
+1. Per-worker quick-ssh key (`/etc/hive/ssh/<worker>_ed25519`) — if quick-ssh is enabled
 2. Worker's configured `ssh_key` — if set via `--ssh-key` on add/setup
 3. Default SSH auth (agent, config, etc.)
 

@@ -170,7 +170,7 @@ All state lives in `/etc/hive/` on the manager:
 | `config.json` | Manager role config |
 | `workers.json` | Registered workers + per-worker repo mappings |
 | `telegram_config.json` | Telegram bot credentials (shared with workers) |
-| `ssh/` | Per-worker hive SSH keys (created by `set quick-ssh`) |
+| `ssh/` | Per-worker quick-ssh keys (created by `set quick-ssh`) |
 
 ## 📋 Requirements
 

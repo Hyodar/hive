@@ -23,7 +23,7 @@ ensure_workers_file() {
     fi
 }
 
-# Resolve SSH identity for a worker: per-worker hive key > configured ssh_key > default
+# Resolve SSH identity for a worker: per-worker quick-ssh key > configured ssh_key > default
 resolve_worker_ssh_id() {
     local NAME="$1"
     local HIVE_KEY="$HIVE_SSH_DIR/${NAME}_ed25519"
@@ -57,7 +57,7 @@ worker_add() {
                 echo "Register a worker without running setup."
                 echo "Name should match the machine's Tailscale name."
                 echo "Host defaults to the name (for Tailscale DNS)."
-                echo "SSH key is stored and used for all hive SSH operations."
+                echo "SSH key is stored and used for all SSH operations to this worker."
                 exit 0
                 ;;
             -*)
@@ -158,8 +158,8 @@ worker_set_quick_ssh() {
                 echo "Usage: hive worker set quick-ssh --name <worker> <true|false>"
                 echo ""
                 echo "Set up or remove passwordless SSH to a worker."
-                echo "  true   Generate a hive SSH key and copy it to the worker"
-                echo "  false  Remove the hive SSH key locally and from the worker"
+                echo "  true   Generate a quick-ssh key and copy it to the worker"
+                echo "  false  Remove the quick-ssh key locally and from the worker"
                 exit 0
                 ;;
             -*)
@@ -189,14 +189,14 @@ worker_set_quick_ssh() {
     local HIVE_KEY="$HIVE_SSH_DIR/${WORKER}_ed25519"
 
     if [ "$ENABLE" = "true" ]; then
-        # Generate per-worker hive SSH key if it doesn't exist
+        # Generate per-worker quick-ssh key if it doesn't exist
         if [ ! -f "$HIVE_KEY" ]; then
-            echo -e "${BLUE}Generating hive SSH key ($HIVE_KEY)...${NC}"
+            echo -e "${BLUE}Generating quick-ssh key ($HIVE_KEY)...${NC}"
             mkdir -p "$HIVE_SSH_DIR"
             ssh-keygen -t ed25519 -N "" -f "$HIVE_KEY" -C "hive-$WORKER"
             echo -e "${GREEN}[OK]${NC} Key generated: $HIVE_KEY"
         else
-            echo -e "${BLUE}Using existing hive SSH key: $HIVE_KEY${NC}"
+            echo -e "${BLUE}Using existing quick-ssh key: $HIVE_KEY${NC}"
         fi
 
         # Use the worker's configured ssh_key (if any) to authenticate for ssh-copy-id
@@ -207,17 +207,17 @@ worker_set_quick_ssh() {
             BASE_SSH_ID="-o IdentityFile=$WORKER_SSH_KEY"
         fi
 
-        # Copy hive key to worker
+        # Copy quick-ssh key to worker
         echo -e "${BLUE}Copying key to worker '$WORKER' ($HOST)...${NC}"
         ssh-copy-id $BASE_SSH_ID -i "$HIVE_KEY" "$HOST"
 
         echo ""
         echo -e "${GREEN}[OK]${NC} Quick SSH configured for worker '$WORKER'"
-        echo "All hive SSH commands to this worker will now be passwordless."
+        echo "All SSH commands to this worker will now be passwordless."
     else
         # --- Disable quick-ssh ---
         if [ ! -f "$HIVE_KEY" ]; then
-            echo -e "${YELLOW}[WARN]${NC} No hive SSH key found for worker '$WORKER'"
+            echo -e "${YELLOW}[WARN]${NC} No quick-ssh key found for worker '$WORKER'"
             return 0
         fi
 
@@ -226,7 +226,7 @@ worker_set_quick_ssh() {
             local PUB_KEY_DATA
             PUB_KEY_DATA=$(awk '{print $2}' "$HIVE_KEY.pub")
 
-            # Use the hive key itself (still valid) to connect and remove it
+            # Use the quick-ssh key itself (still valid) to connect and remove it
             echo -e "${BLUE}Removing key from worker '$WORKER' ($HOST)...${NC}"
             ssh -i "$HIVE_KEY" "$HOST" "
                 if [ -f ~/.ssh/authorized_keys ]; then

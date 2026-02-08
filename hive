@@ -34,7 +34,7 @@ resolve_worker() {
     echo "$NAME"
 }
 
-# Resolve SSH identity for a worker: per-worker hive key > configured ssh_key > default
+# Resolve SSH identity for a worker: per-worker quick-ssh key > configured ssh_key > default
 resolve_worker_ssh_id() {
     local NAME="$1"
     local HIVE_KEY="$HIVE_SSH_DIR/${NAME}_ed25519"
