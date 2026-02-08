@@ -4,6 +4,19 @@ Switch between multiple Codex accounts without repeated logins. Linux-only.
 
 Inspired by [codex-auth](https://github.com/Sls0n/codex-account-switcher).
 
+## Install
+
+```bash
+# From the repo
+./install.sh
+
+# Or directly (downloads the script)
+curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/main/tools/codex-account/install.sh | bash
+
+# Custom install directory
+INSTALL_DIR=~/.local/bin ./install.sh
+```
+
 ## Usage
 
 ```bash

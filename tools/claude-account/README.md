@@ -4,6 +4,21 @@ Switch between multiple Claude Code accounts without repeated logins. Linux-only
 
 Inspired by [cc-account-switcher](https://github.com/ming86/cc-account-switcher).
 
+## Install
+
+```bash
+# From the repo
+./install.sh
+
+# Or directly (downloads the script)
+curl -fsSL https://raw.githubusercontent.com/Hyodar/hive/main/tools/claude-account/install.sh | bash
+
+# Custom install directory
+INSTALL_DIR=~/.local/bin ./install.sh
+```
+
+Requires `jq` (`sudo apt install jq`).
+
 ## Usage
 
 ```bash
