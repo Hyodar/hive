@@ -14,7 +14,7 @@ sudo hive init
 
 Must be run as root. Creates:
 - `/etc/hive/config.json` — manager role config
-- `/etc/hive/workers.json` — worker registry
+- `/etc/hive/workers.json` — worker registry (also stores per-worker repo mappings)
 - `/etc/hive/telegram_config.json` — Telegram bot credentials
 
 ## Worker Management

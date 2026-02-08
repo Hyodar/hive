@@ -1,14 +1,20 @@
 #!/bin/bash
 # repo-send - Send a git branch to a remote machine using git bundles over SSH
 #
-# Usage: repo-send [options] <host> [branch]
-#   -p, --path <path>   Remote repo path (default: remote's base_path/<repo-name>)
+# Usage: repo-send [options] <host> [refspec]
+#   Refspec: <local_branch>[:<repo_name>][@<remote_branch>]
+#   -p, --path <path>   Remote repo path (overrides remote config)
 #   -f, --full           Force full bundle (skip incremental)
 #   -h, --help           Show help
 #
 # Config: ~/.repo-transfer/config on the REMOTE machine controls the default base_path.
+# Env: HIVE_WORKER_NAME — if set, enables per-worker repo registration.
 
 set -euo pipefail
+
+# Source registry functions
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/repo-registry.sh"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -18,7 +24,7 @@ NC='\033[0m'
 
 usage() {
     cat <<EOF
-Usage: repo-send [options] <host> [branch]
+Usage: repo-send [options] <host> [refspec]
 
 Send a git branch to a remote machine via git bundle over SSH.
 Automatically uses incremental bundles when possible.
@@ -26,18 +32,26 @@ Automatically uses incremental bundles when possible.
 The remote machine's ~/.repo-transfer/config controls the default
 destination (base_path setting, defaults to ~).
 
+Refspec format: <local_branch>[:<repo_name>][@<remote_branch>]
+  main              Send local 'main' to remote repo (dir name), branch 'main'
+  main:myapp-v2     Send local 'main' to remote 'myapp-v2', branch 'main'
+  main@dev          Send local 'main' to remote repo (dir name), branch 'dev'
+  main:myapp-v2@dev Send local 'main' to remote 'myapp-v2', branch 'dev'
+
 Arguments:
   host      Remote hostname (Tailscale name, IP, or user@host)
-  branch    Branch to send (default: current branch)
+  refspec   What to send (default: current branch, same repo name + branch)
 
 Options:
-  -p, --path <path>   Remote repo path (overrides remote config)
+  -p, --path <path>   Remote repo path (overrides remote config + repo name)
   -f, --full           Force full bundle (no incremental optimization)
   -h, --help           Show this help message
 
 Examples:
   repo-send agent-vm
-  repo-send agent-vm feature/login
+  repo-send agent-vm main
+  repo-send agent-vm main:myapp-v2
+  repo-send agent-vm main:myapp-v2@dev
   repo-send agent-vm main -p ~/projects/myapp
   repo-send user@10.0.0.5 dev --full
 EOF
@@ -46,7 +60,7 @@ EOF
 FULL=false
 REMOTE_PATH=""
 HOST=""
-BRANCH=""
+REFSPEC=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -58,7 +72,7 @@ while [[ $# -gt 0 ]]; do
             usage; exit 1 ;;
         *)
             if [ -z "$HOST" ]; then HOST="$1"
-            elif [ -z "$BRANCH" ]; then BRANCH="$1"
+            elif [ -z "$REFSPEC" ]; then REFSPEC="$1"
             else echo -e "${RED}Too many arguments${NC}"; usage; exit 1
             fi
             shift ;;
@@ -76,54 +90,70 @@ REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo -e "${RED}Error: not in a git repository${NC}"
     exit 1
 }
-REPO_NAME=$(basename "$REPO_ROOT")
 
-# Default to current branch
-if [ -z "$BRANCH" ]; then
-    BRANCH=$(git branch --show-current 2>/dev/null) || {
+DEFAULT_REPO_NAME=$(basename "$REPO_ROOT")
+
+# Parse refspec
+parse_refspec "$REFSPEC" "$DEFAULT_REPO_NAME"
+
+# Default local branch to current branch
+LOCAL_BRANCH="${PARSED_LOCAL_BRANCH}"
+if [ -z "$LOCAL_BRANCH" ]; then
+    LOCAL_BRANCH=$(git branch --show-current 2>/dev/null) || {
         echo -e "${RED}Error: not on a branch (detached HEAD) and no branch specified${NC}"
         exit 1
     }
-    if [ -z "$BRANCH" ]; then
+    if [ -z "$LOCAL_BRANCH" ]; then
         echo -e "${RED}Error: not on a branch (detached HEAD) and no branch specified${NC}"
         exit 1
     fi
 fi
 
-# Verify branch exists
-git rev-parse --verify "$BRANCH" >/dev/null 2>&1 || {
-    echo -e "${RED}Error: branch '$BRANCH' does not exist${NC}"
+REPO_NAME="$PARSED_REPO_NAME"
+REMOTE_BRANCH="${PARSED_REMOTE_BRANCH:-$LOCAL_BRANCH}"
+
+# Resolve repo name via per-worker registry (if worker name is available)
+if [ -n "${HIVE_WORKER_NAME:-}" ]; then
+    resolve_worker_repo_for_send "$HIVE_WORKER_NAME" "$REPO_NAME" "$REPO_ROOT" "$PARSED_REPO_EXPLICIT" || exit 1
+    REPO_NAME="$RESOLVED_REPO_NAME"
+fi
+
+# Verify local branch exists
+git rev-parse --verify "$LOCAL_BRANCH" >/dev/null 2>&1 || {
+    echo -e "${RED}Error: branch '$LOCAL_BRANCH' does not exist${NC}"
     exit 1
 }
 
 # State tracking for incremental bundles
 STATE_DIR="$HOME/.repo-transfer"
-STATE_KEY=$(echo "${REPO_NAME}:${HOST}:${BRANCH}" | md5sum | cut -d' ' -f1)
+STATE_KEY=$(echo "${REPO_NAME}:${HOST}:${LOCAL_BRANCH}:${REMOTE_BRANCH}" | md5sum | cut -d' ' -f1)
 STATE_FILE="$STATE_DIR/send/$STATE_KEY"
 
-BRANCH_TIP=$(git rev-parse "$BRANCH")
+BRANCH_TIP=$(git rev-parse "$LOCAL_BRANCH")
 
 # Create bundle
 BUNDLE_FILE=$(mktemp "/tmp/${REPO_NAME}-XXXXXX.bundle")
 trap "rm -f '$BUNDLE_FILE'" EXIT
 
+echo -e "${BLUE}Sending${NC} ${LOCAL_BRANCH} → ${REPO_NAME}@${REMOTE_BRANCH}${HIVE_WORKER_NAME:+ on ${HIVE_WORKER_NAME}}"
+
 if [ "$FULL" = false ] && [ -f "$STATE_FILE" ]; then
     LAST_COMMIT=$(cat "$STATE_FILE")
     if [ "$LAST_COMMIT" = "$BRANCH_TIP" ]; then
-        echo -e "${YELLOW}Branch '$BRANCH' is unchanged since last send. Nothing to do.${NC}"
+        echo -e "${YELLOW}[$REPO_NAME] Branch '$LOCAL_BRANCH' is unchanged since last send. Nothing to do.${NC}"
         exit 0
     fi
-    if git merge-base --is-ancestor "$LAST_COMMIT" "$BRANCH" 2>/dev/null; then
-        COMMIT_COUNT=$(git rev-list --count "$LAST_COMMIT..$BRANCH")
+    if git merge-base --is-ancestor "$LAST_COMMIT" "$LOCAL_BRANCH" 2>/dev/null; then
+        COMMIT_COUNT=$(git rev-list --count "$LAST_COMMIT..$LOCAL_BRANCH")
         echo -e "${BLUE}Creating incremental bundle ($COMMIT_COUNT new commits)...${NC}"
-        git bundle create "$BUNDLE_FILE" "$LAST_COMMIT..$BRANCH" --
+        git bundle create "$BUNDLE_FILE" "$LAST_COMMIT..$LOCAL_BRANCH" --
     else
-        echo -e "${BLUE}Creating full bundle of '$BRANCH'...${NC}"
-        git bundle create "$BUNDLE_FILE" "$BRANCH" --
+        echo -e "${BLUE}Creating full bundle of '$LOCAL_BRANCH'...${NC}"
+        git bundle create "$BUNDLE_FILE" "$LOCAL_BRANCH" --
     fi
 else
-    echo -e "${BLUE}Creating full bundle of '$BRANCH'...${NC}"
-    git bundle create "$BUNDLE_FILE" "$BRANCH" --
+    echo -e "${BLUE}Creating full bundle of '$LOCAL_BRANCH'...${NC}"
+    git bundle create "$BUNDLE_FILE" "$LOCAL_BRANCH" --
 fi
 
 BUNDLE_SIZE=$(du -h "$BUNDLE_FILE" | cut -f1)
@@ -136,7 +166,7 @@ scp -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 
 # Apply on remote (let remote's config decide path unless -p was given)
 echo -e "${BLUE}Applying on remote...${NC}"
-RECEIVE_CMD="hive repo receive '$REMOTE_BUNDLE' '$BRANCH'"
+RECEIVE_CMD="hive repo receive '$REMOTE_BUNDLE' '$REMOTE_BRANCH'"
 if [ -n "$REMOTE_PATH" ]; then
     RECEIVE_CMD="$RECEIVE_CMD --path '$REMOTE_PATH'"
 fi
@@ -147,4 +177,4 @@ mkdir -p "$(dirname "$STATE_FILE")"
 echo "$BRANCH_TIP" > "$STATE_FILE"
 
 DISPLAY_PATH="${REMOTE_PATH:-"<default>/$REPO_NAME"}"
-echo -e "${GREEN}Sent '$BRANCH' ($BRANCH_TIP) to $HOST:$DISPLAY_PATH${NC}"
+echo -e "${GREEN}[$REPO_NAME] Sent ${LOCAL_BRANCH} → ${REPO_NAME}@${REMOTE_BRANCH} ($BRANCH_TIP) at $HOST:$DISPLAY_PATH${NC}"

@@ -54,10 +54,16 @@ show_help() {
     echo "  worker rm <name>                  Remove a worker from registry"
     echo "  worker ssh <name>                 SSH into a worker"
     echo ""
+    echo -e "${BLUE}Repo registry:${NC}"
+    echo "  repo add <worker> [name]          Register current repo on a worker"
+    echo "  repo ls [worker]                  List repos (all workers or specific)"
+    echo "  repo rm <worker> <name>           Remove a repo from a worker"
+    echo ""
     echo -e "${BLUE}Repo transfer:${NC}"
-    echo "  repo send <worker> [branch]       Send current repo to a worker"
-    echo "  repo fetch <worker> [branch]      Fetch a repo from a worker"
-    echo "  repo ssh <worker>                 SSH into worker at the repo directory"
+    echo "  Refspec: <local_branch>[:<repo_name>][@<remote_branch>]"
+    echo "  repo send <worker> [refspec]      Send current repo to a worker"
+    echo "  repo fetch <worker> [refspec]     Fetch a repo from a worker"
+    echo "  repo ssh <worker> [repo_name]     SSH into worker at the repo directory"
     echo ""
     echo -e "${BLUE}General:${NC}"
     echo "  help                              Show this help"
@@ -78,8 +84,12 @@ case "$CMD" in
         SUBCMD="${1:-}"
         shift 2>/dev/null || true
         case "$SUBCMD" in
+            add|ls|list|rm|remove)
+                exec bash "$HIVE_TOOLS/repo/repo-registry.sh" "$SUBCMD" "$@"
+                ;;
             send|fetch)
-                # Resolve first positional arg (worker name) to SSH host
+                # Resolve first positional arg (worker name) to SSH host,
+                # and export HIVE_WORKER_NAME for per-worker repo registry.
                 RESOLVED_ARGS=()
                 SKIP_NEXT=false
                 HOST_RESOLVED=false
@@ -94,6 +104,7 @@ case "$CMD" in
                         -*) RESOLVED_ARGS+=("$arg") ;;
                         *)
                             if ! $HOST_RESOLVED; then
+                                export HIVE_WORKER_NAME="$arg"
                                 RESOLVED_ARGS+=("$(resolve_worker "$arg")")
                                 HOST_RESOLVED=true
                             else
@@ -108,14 +119,25 @@ case "$CMD" in
             ssh)
                 WORKER="${1:-}"
                 if [ -z "$WORKER" ]; then
-                    echo -e "${RED}Usage: hive repo ssh <worker>${NC}"
+                    echo -e "${RED}Usage: hive repo ssh <worker> [repo_name]${NC}"
                     exit 1
                 fi
+                shift
+                EXPLICIT_REPO="${1:-}"
                 SSH_HOST=$(resolve_worker "$WORKER")
                 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
                     echo -e "${RED}Error: not in a git repository${NC}"; exit 1
                 }
-                REPO_NAME=$(basename "$REPO_ROOT")
+                # Determine repo name: explicit arg > registry lookup > basename
+                if [ -n "$EXPLICIT_REPO" ]; then
+                    REPO_NAME="$EXPLICIT_REPO"
+                else
+                    source "$HIVE_TOOLS/repo/repo-registry.sh"
+                    ensure_workers_file 2>/dev/null && {
+                        REPO_NAME=$(lookup_worker_repo_by_path "$WORKER" "$REPO_ROOT")
+                    }
+                    REPO_NAME="${REPO_NAME:-$(basename "$REPO_ROOT")}"
+                fi
                 REMOTE_BASE=$(ssh "$SSH_HOST" bash -c "'
                     BP=\$HOME
                     CFG=\$HOME/.repo-transfer/config
@@ -126,11 +148,26 @@ case "$CMD" in
                     fi
                     echo \"\$BP\"
                 '") || REMOTE_BASE="~"
-                echo -e "${BLUE}Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
+                echo -e "${BLUE}[$REPO_NAME] Connecting to $SSH_HOST:$REMOTE_BASE/$REPO_NAME...${NC}"
                 exec ssh -t "$SSH_HOST" "cd '$REMOTE_BASE/$REPO_NAME' && exec \$SHELL -l"
                 ;;
+            help|--help|-h)
+                echo "Usage: hive repo <command>"
+                echo ""
+                echo "Registry:"
+                echo "  add <worker> [name]         Register current repo on a worker"
+                echo "  ls [worker]                 List repos (all workers or specific)"
+                echo "  rm <worker> <name>          Remove a repo from a worker"
+                echo ""
+                echo "Transfer (refspec: <local_branch>[:<repo_name>][@<remote_branch>]):"
+                echo "  send <worker> [refspec]     Send repo to a worker"
+                echo "  fetch <worker> [refspec]    Fetch repo from a worker"
+                echo "  ssh <worker> [repo_name]    SSH into worker at repo directory"
+                exit 0
+                ;;
             *)
-                echo "Usage: hive repo <send|fetch|ssh>"
+                echo -e "${RED}Unknown repo command: ${SUBCMD:-<none>}${NC}"
+                echo "Run 'hive repo help' for usage"
                 exit 1
                 ;;
         esac
