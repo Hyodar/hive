@@ -2,6 +2,27 @@
 
 Autonomous AI agent loop that runs AI coding tools (Claude Code, Codex, Amp) repeatedly until all PRD items are complete. Each iteration is a fresh instance with clean context.
 
+## Standalone Install
+
+Install ralph2 independently, without the full Hive worker setup:
+
+```bash
+# Clone the repo and run the installer
+git clone https://github.com/Hyodar/hive.git
+cd hive/tools/ralph2
+./install.sh              # user-local install (~/.local/bin, ~/.ralph2)
+```
+
+Options:
+
+```bash
+./install.sh --system       # system-wide install (/usr/local/bin, requires sudo)
+./install.sh --no-skills    # skip installing skills to AI tool directories
+./install.sh --no-telegram  # skip installing alertme/promptme
+```
+
+Prerequisites: `jq`, `git`, and at least one AI tool (`claude`, `codex`, or `amp`).
+
 ## Quick Start
 
 ```bash
@@ -15,7 +36,7 @@ ralph2 --status                 # check progress
 ralph2 --list                   # see all tasks
 ```
 
-No per-project setup needed. Skills are installed globally by `hive worker setup`.
+Skills are installed globally by `hive worker setup` or the standalone `install.sh`.
 
 ## Commands
 
