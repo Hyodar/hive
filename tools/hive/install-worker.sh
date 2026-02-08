@@ -320,13 +320,12 @@ cat > "$BIN_DIR/ralph2" << EOF
 #!/bin/bash
 exec "$CONFIG_DIR/ralph2/ralph2.sh" "\$@"
 EOF
-cp "$SCRIPT_DIR/tools/ralph2/prd" "$BIN_DIR/prd"
-cp "$SCRIPT_DIR/tools/telegram-bot/alertme" "$BIN_DIR/alertme"
-cp "$SCRIPT_DIR/tools/telegram-bot/promptme" "$BIN_DIR/promptme"
-cp "$SCRIPT_DIR/tools/telegram-bot/tgsetup" "$BIN_DIR/tgsetup"
-cp "$SCRIPT_DIR/tools/codex-account/codex-account" "$BIN_DIR/codex-account"
-cp "$SCRIPT_DIR/tools/claude-account/claude-account" "$BIN_DIR/claude-account"
-chmod +x "$BIN_DIR/ralph2" "$BIN_DIR/prd" "$BIN_DIR/alertme" "$BIN_DIR/promptme" "$BIN_DIR/tgsetup" "$BIN_DIR/codex-account" "$BIN_DIR/claude-account"
+install -m 755 "$SCRIPT_DIR/tools/ralph2/prd" "$BIN_DIR/prd"
+install -m 755 "$SCRIPT_DIR/tools/telegram-bot/alertme" "$BIN_DIR/alertme"
+install -m 755 "$SCRIPT_DIR/tools/telegram-bot/promptme" "$BIN_DIR/promptme"
+install -m 755 "$SCRIPT_DIR/tools/telegram-bot/tgsetup" "$BIN_DIR/tgsetup"
+install -m 755 "$SCRIPT_DIR/tools/codex-account/codex-account" "$BIN_DIR/codex-account"
+install -m 755 "$SCRIPT_DIR/tools/claude-account/claude-account" "$BIN_DIR/claude-account"
 
 # Install skills globally for all AI tools
 log_info "Installing skills globally for all AI tools..."
