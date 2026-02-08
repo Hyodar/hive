@@ -31,12 +31,15 @@ fi
 
 # Install to bin directory
 if [[ -w "$INSTALL_DIR" ]]; then
-    cp "$SOURCE" "$INSTALL_DIR/$TOOL_NAME"
-    chmod +x "$INSTALL_DIR/$TOOL_NAME"
+    install -m 755 "$SOURCE" "$INSTALL_DIR/$TOOL_NAME"
 else
     echo "Need sudo to install to $INSTALL_DIR"
-    sudo cp "$SOURCE" "$INSTALL_DIR/$TOOL_NAME"
-    sudo chmod +x "$INSTALL_DIR/$TOOL_NAME"
+    sudo install -m 755 "$SOURCE" "$INSTALL_DIR/$TOOL_NAME"
+fi
+
+# Verify
+if [[ ! -x "$INSTALL_DIR/$TOOL_NAME" ]]; then
+    die "Installation failed — $INSTALL_DIR/$TOOL_NAME is not executable"
 fi
 
 echo -e "${GREEN}Installed${NC} $TOOL_NAME to $INSTALL_DIR/$TOOL_NAME"
