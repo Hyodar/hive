@@ -191,20 +191,68 @@ cmd_default() {
 }
 
 # init: output shell snippet for .bashrc/.zshrc
+# Installs wrapper functions so `use` is truly per-session (like nvm).
 cmd_init() {
     cat << 'INITEOF'
-# codex-account shell init — restores default account on new shells
-if command -v codex-account >/dev/null 2>&1; then
-    _codex_account_default_file="$HOME/.codex/default"
-    if [[ -f "$_codex_account_default_file" ]]; then
-        _codex_account_default=$(<"$_codex_account_default_file")
-        _codex_account_default="${_codex_account_default%$'\n'}"
-        if [[ -n "$_codex_account_default" ]]; then
-            codex-account use "$_codex_account_default" > /dev/null 2>&1 || true
+# codex-account shell init — per-session account switching (like nvm)
+_codex_account_session=""
+
+# Wrap codex-account: 'use' only sets a session variable (no global switch)
+codex-account() {
+    case "${1:-}" in
+        use)
+            shift
+            if [[ $# -eq 0 ]]; then
+                # Interactive — delegate to real command, then sync session var
+                command codex-account use
+                local _cf="$HOME/.codex/current"
+                [[ -f "$_cf" ]] && { _codex_account_session=$(<"$_cf"); _codex_account_session="${_codex_account_session%$'\n'}"; }
+            else
+                local _name="${1%.json}"
+                local _src="$HOME/.codex/accounts/$_name.json"
+                if [[ ! -f "$_src" ]]; then
+                    echo "Error: Account \"$_name\" not found. Run 'codex-account list' to see saved accounts." >&2
+                    return 1
+                fi
+                _codex_account_session="$_name"
+                echo "Using Codex account \"$_name\" (this session only)."
+            fi
+            ;;
+        default|save|setup)
+            # These change global state — delegate and sync session var
+            command codex-account "$@"
+            local _cf="$HOME/.codex/current"
+            [[ -f "$_cf" ]] && { _codex_account_session=$(<"$_cf"); _codex_account_session="${_codex_account_session%$'\n'}"; }
+            ;;
+        *)
+            command codex-account "$@"
+            ;;
+    esac
+}
+
+# Wrap codex: lazily swap credentials to match this session's account
+codex() {
+    if [[ -n "${_codex_account_session:-}" ]]; then
+        local _cf="$HOME/.codex/current"
+        local _cur=""
+        [[ -f "$_cf" ]] && { _cur=$(<"$_cf"); _cur="${_cur%$'\n'}"; }
+        if [[ "$_cur" != "$_codex_account_session" ]]; then
+            command codex-account use "$_codex_account_session" > /dev/null 2>&1 || true
         fi
     fi
-    unset _codex_account_default_file _codex_account_default
+    command codex "$@"
+}
+
+# Restore default account on shell startup
+_codex_account_df="$HOME/.codex/default"
+if [[ -f "$_codex_account_df" ]]; then
+    _codex_account_session=$(<"$_codex_account_df")
+    _codex_account_session="${_codex_account_session%$'\n'}"
+    if [[ -n "$_codex_account_session" ]]; then
+        command codex-account use "$_codex_account_session" > /dev/null 2>&1 || true
+    fi
 fi
+unset _codex_account_df
 INITEOF
 }
 
@@ -261,6 +309,10 @@ show_help() {
     echo ""
     echo "Shell init (add to .bashrc or .zshrc):"
     echo "  eval \"\$(codex-account init)\""
+    echo ""
+    echo "With init, 'use' is truly per-session: each terminal keeps its own"
+    echo "account, and a 'codex' wrapper restores it before each invocation."
+    echo "Without init, 'use' changes the global symlink immediately."
 }
 
 case "${1:-help}" in

@@ -41,13 +41,19 @@ codex-account list
 codex-account current
 ```
 
-### Shell init
+### Shell init (recommended)
 
-To restore the default account on new shell sessions, add to `.bashrc` or `.zshrc`:
+Add to `.bashrc` or `.zshrc` to enable per-session switching:
 
 ```bash
 eval "$(codex-account init)"
 ```
+
+This installs shell functions that make `use` truly per-session: each terminal
+keeps its own account selection, and a `codex` wrapper lazily restores the right
+credentials before each invocation. It also restores the `default` account on
+shell startup. Without `init`, `use` changes the global symlink immediately
+(affects all terminals).
 
 ## Commands
 

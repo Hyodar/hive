@@ -151,11 +151,13 @@ codex-account list             # or: claude-account list
 codex-account current          # or: claude-account current
 ```
 
-Add to `.bashrc` or `.zshrc` to restore default account on new shells:
+Add to `.bashrc` or `.zshrc` to enable per-session switching (recommended):
 
 ```bash
 eval "$(claude-account init)"  # and/or: eval "$(codex-account init)"
 ```
+
+With `init`, `use` is truly per-session: each terminal keeps its own account and a `claude`/`codex` wrapper lazily restores the right credentials before each invocation. Without `init`, `use` changes the global symlink immediately.
 
 | Command | Description |
 |---------|-------------|
