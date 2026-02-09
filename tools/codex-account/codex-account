@@ -2,6 +2,10 @@
 # codex-account - Manage and switch between multiple Codex accounts
 # Inspired by https://github.com/Sls0n/codex-account-switcher (codex-auth)
 # Linux-only. Uses symlinks for zero-copy switching.
+#
+# Works like nvm: `use` sets the account for the current session,
+# `default` sets what new shells start with. Add to .bashrc/.zshrc:
+#   eval "$(codex-account init)"
 
 set -euo pipefail
 
@@ -9,6 +13,7 @@ CODEX_DIR="$HOME/.codex"
 ACCOUNTS_DIR="$CODEX_DIR/accounts"
 AUTH_FILE="$CODEX_DIR/auth.json"
 CURRENT_FILE="$CODEX_DIR/current"
+DEFAULT_FILE="$CODEX_DIR/default"
 ACCOUNT_NAME_PATTERN='^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
 
 die() { echo "Error: $*" >&2; exit 1; }
@@ -35,6 +40,16 @@ get_current() {
         target=$(basename "$target")
         echo "${target%.json}"
         return
+    fi
+    echo ""
+}
+
+get_default() {
+    if [[ -f "$DEFAULT_FILE" ]]; then
+        local name
+        name=$(<"$DEFAULT_FILE")
+        name="${name%$'\n'}"
+        [[ -n "$name" ]] && echo "$name" && return
     fi
     echo ""
 }
@@ -76,9 +91,15 @@ cmd_save() {
 
     echo "$name" > "$CURRENT_FILE"
 
+    # Set as default if no default exists yet
+    if [[ ! -f "$DEFAULT_FILE" ]] || [[ -z "$(get_default)" ]]; then
+        echo "$name" > "$DEFAULT_FILE"
+    fi
+
     echo "Saved current Codex auth as \"$name\"."
 }
 
+# use: switch for the current session (does NOT change the default)
 cmd_use() {
     local name="${1:-}"
 
@@ -92,15 +113,18 @@ cmd_use() {
         fi
         [[ ${#accounts[@]} -eq 0 ]] && die "No saved accounts. Run 'codex-account save <name>' first."
 
-        local current
+        local current default_name
         current=$(get_current)
+        default_name=$(get_default)
 
         echo "Select account:"
         local i=1
         for acct in "${accounts[@]}"; do
             local mark=" "
             [[ "$acct" == "$current" ]] && mark="*"
-            echo "  $mark $i) $acct"
+            local suffix=""
+            [[ "$acct" == "$default_name" ]] && suffix=" (default)"
+            echo "  $mark $i) $acct$suffix"
             ((i++))
         done
 
@@ -113,6 +137,14 @@ cmd_use() {
         name=$(validate_name "$name")
     fi
 
+    _switch_to "$name"
+}
+
+# Internal: perform the actual switch
+_switch_to() {
+    local name="$1"
+    local quiet="${2:-}"
+
     local source="$ACCOUNTS_DIR/$name.json"
     [[ -f "$source" ]] || die "Account \"$name\" not found. Run 'codex-account list' to see saved accounts."
 
@@ -124,7 +156,56 @@ cmd_use() {
 
     echo "$name" > "$CURRENT_FILE"
 
-    echo "Switched Codex auth to \"$name\"."
+    if [[ "$quiet" != "quiet" ]]; then
+        echo "Switched Codex auth to \"$name\"."
+    fi
+}
+
+# default: set (or show) the default account for new shells
+cmd_default() {
+    local name="${1:-}"
+
+    if [[ -z "$name" ]]; then
+        # Show current default
+        local default_name
+        default_name=$(get_default)
+        if [[ -n "$default_name" ]]; then
+            echo "$default_name"
+        else
+            echo "No default set. Run 'codex-account default <name>' to set one."
+        fi
+        return
+    fi
+
+    name=$(validate_name "$name")
+
+    local source="$ACCOUNTS_DIR/$name.json"
+    [[ -f "$source" ]] || die "Account \"$name\" not found. Run 'codex-account list' to see saved accounts."
+
+    echo "$name" > "$DEFAULT_FILE"
+
+    # Also switch to it now
+    _switch_to "$name" quiet
+
+    echo "Default Codex account set to \"$name\"."
+}
+
+# init: output shell snippet for .bashrc/.zshrc
+cmd_init() {
+    cat << 'INITEOF'
+# codex-account shell init — restores default account on new shells
+if command -v codex-account >/dev/null 2>&1; then
+    _codex_account_default_file="$HOME/.codex/default"
+    if [[ -f "$_codex_account_default_file" ]]; then
+        _codex_account_default=$(<"$_codex_account_default_file")
+        _codex_account_default="${_codex_account_default%$'\n'}"
+        if [[ -n "$_codex_account_default" ]]; then
+            codex-account use "$_codex_account_default" > /dev/null 2>&1 || true
+        fi
+    fi
+    unset _codex_account_default_file _codex_account_default
+fi
+INITEOF
 }
 
 cmd_list() {
@@ -140,13 +221,16 @@ cmd_list() {
 
     [[ ${#accounts[@]} -eq 0 ]] && { echo "No saved Codex accounts yet. Run 'codex-account save <name>'."; return; }
 
-    local current
+    local current default_name
     current=$(get_current)
+    default_name=$(get_default)
 
     for acct in "${accounts[@]}"; do
         local mark=" "
         [[ "$acct" == "$current" ]] && mark="*"
-        echo "$mark $acct"
+        local suffix=""
+        [[ "$acct" == "$default_name" ]] && suffix=" (default)"
+        echo "$mark $acct$suffix"
     done
 }
 
@@ -161,23 +245,30 @@ cmd_current() {
 }
 
 show_help() {
-    echo "codex-account - Manage multiple Codex accounts"
+    echo "codex-account - Manage multiple Codex accounts (nvm-style)"
     echo ""
     echo "Usage: codex-account <command> [args]"
     echo ""
     echo "Commands:"
-    echo "  setup <name>   Logout, login, and save as a named account"
-    echo "  save <name>    Save current ~/.codex/auth.json as a named account"
-    echo "  use [name]     Switch to a named account (interactive if no name given)"
-    echo "  list           List all saved accounts (* = active)"
-    echo "  current        Show the currently active account name"
-    echo "  help           Show this help"
+    echo "  setup <name>     Logout, login, and save as a named account"
+    echo "  save <name>      Save current ~/.codex/auth.json as a named account"
+    echo "  use [name]       Switch to a named account for the current session"
+    echo "  default [name]   Set (or show) the default account for new shells"
+    echo "  init             Output shell init script (eval in .bashrc/.zshrc)"
+    echo "  list             List all saved accounts (* = active, default marked)"
+    echo "  current          Show the currently active account name"
+    echo "  help             Show this help"
+    echo ""
+    echo "Shell init (add to .bashrc or .zshrc):"
+    echo "  eval \"\$(codex-account init)\""
 }
 
 case "${1:-help}" in
     setup)   shift; cmd_setup "$@" ;;
     save)    shift; cmd_save "$@" ;;
     use)     shift; cmd_use "$@" ;;
+    default) shift; cmd_default "$@" ;;
+    init)    cmd_init ;;
     list|ls) cmd_list ;;
     current) cmd_current ;;
     help|--help|-h) show_help ;;
