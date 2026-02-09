@@ -136,9 +136,12 @@ codex-account setup work       # or: claude-account setup work
 # Save your current login as a named account
 codex-account save work        # or: claude-account save work
 
-# Switch between them
+# Switch for the current session (like nvm use)
 codex-account use work         # or: claude-account use work
 codex-account use personal     # or: claude-account use personal
+
+# Set the default for new shells (like nvm alias default)
+codex-account default work     # or: claude-account default work
 
 # Interactive selection (no name = pick from a list)
 codex-account use              # or: claude-account use
@@ -148,14 +151,23 @@ codex-account list             # or: claude-account list
 codex-account current          # or: claude-account current
 ```
 
+Add to `.bashrc` or `.zshrc` to restore default account on new shells:
+
+```bash
+eval "$(claude-account init)"  # and/or: eval "$(codex-account init)"
+```
+
 | Command | Description |
 |---------|-------------|
 | `setup <name>` | Logout, login, and save as a named account |
 | `save <name>` | Save current auth as a named account |
-| `use [name]` | Switch to a named account (interactive if no name) |
-| `list` | List all saved accounts (`*` = active) |
+| `use [name]` | Switch to a named account for the current session |
+| `default [name]` | Set (or show) the default account for new shells |
+| `init` | Output shell init script (eval in `.bashrc`/`.zshrc`) |
+| `list` | List all saved accounts (`*` = active, default marked) |
 | `current` | Show the currently active account name |
 
+- Works like nvm: `use` sets the account for the current session, `default` sets what new shells start with
 - **codex-account** manages `~/.codex/auth.json` snapshots in `~/.codex/accounts/`
 - **claude-account** manages `~/.claude/.credentials.json` and the `oauthAccount` section of `.claude.json`, stored in `~/.claude/accounts/`
 - Both use symlinks for switching (Linux-only)
