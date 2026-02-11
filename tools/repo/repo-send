@@ -143,7 +143,12 @@ scp $HIVE_SSH_ID -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 # Apply on remote (let remote's config decide path unless -p was given)
 # The apply logic is inlined here so the worker doesn't need hive installed.
 echo -e "${BLUE}Applying on remote...${NC}"
-ssh $HIVE_SSH_ID "$HOST" bash -s -- "$REMOTE_BUNDLE" "$LOCAL_BRANCH" "$REMOTE_BRANCH" "$REMOTE_PATH" "$REPO_NAME" <<'REMOTE_APPLY'
+ssh $HIVE_SSH_ID "$HOST" bash -s -- \
+    "$(printf '%q' "$REMOTE_BUNDLE")" \
+    "$(printf '%q' "$LOCAL_BRANCH")" \
+    "$(printf '%q' "$REMOTE_BRANCH")" \
+    "$(printf '%q' "$REMOTE_PATH")" \
+    "$(printf '%q' "$REPO_NAME")" <<'REMOTE_APPLY'
 set -euo pipefail
 
 BUNDLE="$1"
