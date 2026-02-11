@@ -110,7 +110,16 @@ systemctl daemon-reload
 echo ""
 echo "The Telegram bot will be shared with all workers."
 echo ""
-bash "$SCRIPT_DIR/tools/telegram-bot/tgsetup"
+
+# Skip interactive setup if Telegram is already configured with valid credentials
+TG_CONFIG="$HIVE_DIR/telegram_config.json"
+EXISTING_TOKEN=$(jq -r '.bot_token // ""' "$TG_CONFIG" 2>/dev/null)
+EXISTING_CHAT=$(jq -r '.chat_id // ""' "$TG_CONFIG" 2>/dev/null)
+if [ -n "$EXISTING_TOKEN" ] && [ -n "$EXISTING_CHAT" ]; then
+    echo -e "${GREEN}[OK]${NC} Telegram already configured (chat $EXISTING_CHAT)"
+else
+    bash "$SCRIPT_DIR/tools/telegram-bot/tgsetup"
+fi
 
 # ---- Fix ownership ----
 # Since init runs as root, ensure the invoking user owns their config

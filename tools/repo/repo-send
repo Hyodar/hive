@@ -116,6 +116,7 @@ REPO_NAME="$PARSED_REPO_NAME"
 REMOTE_BRANCH="${PARSED_REMOTE_BRANCH:-$LOCAL_BRANCH}"
 
 # Resolve repo name via per-worker registry (if worker name is available)
+REPO_FRESHLY_REGISTERED=false
 if [ -n "${HIVE_WORKER_NAME:-}" ]; then
     resolve_worker_repo_for_send "$HIVE_WORKER_NAME" "$REPO_NAME" "$REPO_ROOT" "$PARSED_REPO_EXPLICIT" || exit 1
     REPO_NAME="$RESOLVED_REPO_NAME"
@@ -139,6 +140,12 @@ BUNDLE_FILE=$(mktemp "/tmp/${REPO_NAME}-XXXXXX.bundle")
 trap "rm -f '$BUNDLE_FILE'" EXIT
 
 echo -e "${BLUE}Sending${NC} ${LOCAL_BRANCH} → ${REPO_NAME}@${REMOTE_BRANCH}${HIVE_WORKER_NAME:+ on ${HIVE_WORKER_NAME}}"
+
+# Clear stale state when repo was freshly registered on this worker
+# (previous state may be from a deleted/re-setup worker)
+if [ "$REPO_FRESHLY_REGISTERED" = true ] && [ -f "$STATE_FILE" ]; then
+    rm -f "$STATE_FILE"
+fi
 
 if [ "$FULL" = false ] && [ -f "$STATE_FILE" ]; then
     LAST_COMMIT=$(cat "$STATE_FILE")
