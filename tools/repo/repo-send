@@ -168,12 +168,90 @@ echo -e "${BLUE}Transferring to $HOST...${NC}"
 scp $HIVE_SSH_ID -q "$BUNDLE_FILE" "$HOST:$REMOTE_BUNDLE"
 
 # Apply on remote (let remote's config decide path unless -p was given)
+# The apply logic is inlined here so the worker doesn't need hive installed.
 echo -e "${BLUE}Applying on remote...${NC}"
-RECEIVE_CMD="hive repo apply '$REMOTE_BUNDLE' '$REMOTE_BRANCH'"
-if [ -n "$REMOTE_PATH" ]; then
-    RECEIVE_CMD="$RECEIVE_CMD --path '$REMOTE_PATH'"
+ssh $HIVE_SSH_ID "$HOST" bash -s -- "$REMOTE_BUNDLE" "$LOCAL_BRANCH" "$REMOTE_BRANCH" "$REMOTE_PATH" "$REPO_NAME" <<'REMOTE_APPLY'
+set -euo pipefail
+
+BUNDLE="$1"
+BUNDLE_BRANCH="$2"
+LOCAL_BRANCH="$3"
+EXPLICIT_PATH="$4"
+REPO_NAME="$5"
+
+# Load config for default base path
+REPO_TRANSFER_BASE_PATH="$HOME"
+CONFIG_FILE="$HOME/.repo-transfer/config"
+if [ -f "$CONFIG_FILE" ]; then
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | xargs)
+        value=$(echo "$value" | xargs)
+        value="${value/#\~/$HOME}"
+        case "$key" in
+            base_path) REPO_TRANSFER_BASE_PATH="$value" ;;
+        esac
+    done < "$CONFIG_FILE"
 fi
-ssh $HIVE_SSH_ID "$HOST" "$RECEIVE_CMD; rm -f '$REMOTE_BUNDLE'"
+
+# Determine target path
+if [ -z "$EXPLICIT_PATH" ]; then
+    TARGET_PATH="$REPO_TRANSFER_BASE_PATH/$REPO_NAME"
+else
+    TARGET_PATH="${EXPLICIT_PATH/#\~/$HOME}"
+fi
+
+if [ ! -d "$TARGET_PATH" ]; then
+    # First time: clone from bundle
+    echo "Creating new repo at $TARGET_PATH..."
+    mkdir -p "$(dirname "$TARGET_PATH")"
+    git clone "$BUNDLE" "$TARGET_PATH" -b "$BUNDLE_BRANCH"
+    cd "$TARGET_PATH"
+    git remote remove origin 2>/dev/null || true
+    # Rename branch if local name differs from bundle branch
+    if [ "$LOCAL_BRANCH" != "$BUNDLE_BRANCH" ]; then
+        git branch -m "$BUNDLE_BRANCH" "$LOCAL_BRANCH"
+    fi
+    echo "Cloned and checked out '$LOCAL_BRANCH' at $TARGET_PATH"
+
+elif [ ! -d "$TARGET_PATH/.git" ]; then
+    echo "Error: $TARGET_PATH exists but is not a git repository" >&2
+    exit 1
+
+else
+    # Existing repo: fetch from bundle and update branch
+    cd "$TARGET_PATH"
+    CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+
+    if [ "$CURRENT_BRANCH" = "$LOCAL_BRANCH" ]; then
+        # On the target branch - check for uncommitted changes
+        if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+            echo "Warning: uncommitted changes on '$LOCAL_BRANCH' - stashing"
+            git stash push -m "repo-apply auto-stash $(date +%Y%m%d-%H%M%S)"
+        fi
+
+        git fetch "$BUNDLE" "$BUNDLE_BRANCH"
+        if git merge --ff-only FETCH_HEAD 2>/dev/null; then
+            echo "Fast-forwarded '$LOCAL_BRANCH'"
+        else
+            echo "Cannot fast-forward. Resetting to received state..."
+            git reset --hard FETCH_HEAD
+            echo "Reset '$LOCAL_BRANCH' to received state"
+        fi
+    else
+        # On a different branch - update the target ref directly
+        git fetch "$BUNDLE" "$BUNDLE_BRANCH:$LOCAL_BRANCH"
+        git checkout "$LOCAL_BRANCH"
+        echo "Updated and checked out '$LOCAL_BRANCH'"
+    fi
+
+    echo "Repo updated at $TARGET_PATH"
+fi
+
+# Clean up the bundle
+rm -f "$BUNDLE"
+REMOTE_APPLY
 
 # Record state for future incremental sends
 mkdir -p "$(dirname "$STATE_FILE")"
