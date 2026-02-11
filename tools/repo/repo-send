@@ -4,7 +4,6 @@
 # Usage: repo-send [options] <host> [refspec]
 #   Refspec: <local_branch>[:<repo_name>][@<remote_branch>]
 #   -p, --path <path>   Remote repo path (overrides remote config)
-#   -f, --full           Force full bundle (skip incremental)
 #   -h, --help           Show help
 #
 # Config: ~/.repo-transfer/config on the REMOTE machine controls the default base_path.
@@ -30,7 +29,6 @@ usage() {
 Usage: repo-send [options] <host> [refspec]
 
 Send a git branch to a remote machine via git bundle over SSH.
-Automatically uses incremental bundles when possible.
 
 The remote machine's ~/.repo-transfer/config controls the default
 destination (base_path setting, defaults to ~).
@@ -47,7 +45,6 @@ Arguments:
 
 Options:
   -p, --path <path>   Remote repo path (overrides remote config + repo name)
-  -f, --full           Force full bundle (no incremental optimization)
   -h, --help           Show this help message
 
 Examples:
@@ -56,11 +53,9 @@ Examples:
   repo-send agent-vm main:myapp-v2
   repo-send agent-vm main:myapp-v2@dev
   repo-send agent-vm main -p ~/projects/myapp
-  repo-send user@10.0.0.5 dev --full
 EOF
 }
 
-FULL=false
 REMOTE_PATH=""
 HOST=""
 REFSPEC=""
@@ -68,7 +63,6 @@ REFSPEC=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         -p|--path) REMOTE_PATH="$2"; shift 2 ;;
-        -f|--full) FULL=true; shift ;;
         -h|--help) usage; exit 0 ;;
         -*)
             echo -e "${RED}Unknown option: $1${NC}"
@@ -116,7 +110,6 @@ REPO_NAME="$PARSED_REPO_NAME"
 REMOTE_BRANCH="${PARSED_REMOTE_BRANCH:-$LOCAL_BRANCH}"
 
 # Resolve repo name via per-worker registry (if worker name is available)
-REPO_FRESHLY_REGISTERED=false
 if [ -n "${HIVE_WORKER_NAME:-}" ]; then
     resolve_worker_repo_for_send "$HIVE_WORKER_NAME" "$REPO_NAME" "$REPO_ROOT" "$PARSED_REPO_EXPLICIT" || exit 1
     REPO_NAME="$RESOLVED_REPO_NAME"
@@ -128,11 +121,6 @@ git rev-parse --verify "$LOCAL_BRANCH" >/dev/null 2>&1 || {
     exit 1
 }
 
-# State tracking for incremental bundles
-STATE_DIR="$HOME/.repo-transfer"
-STATE_KEY=$(echo "${REPO_NAME}:${HOST}:${LOCAL_BRANCH}:${REMOTE_BRANCH}" | md5sum | cut -d' ' -f1)
-STATE_FILE="$STATE_DIR/send/$STATE_KEY"
-
 BRANCH_TIP=$(git rev-parse "$LOCAL_BRANCH")
 
 # Create bundle
@@ -141,30 +129,8 @@ trap "rm -f '$BUNDLE_FILE'" EXIT
 
 echo -e "${BLUE}Sending${NC} ${LOCAL_BRANCH} → ${REPO_NAME}@${REMOTE_BRANCH}${HIVE_WORKER_NAME:+ on ${HIVE_WORKER_NAME}}"
 
-# Clear stale state when repo was freshly registered on this worker
-# (previous state may be from a deleted/re-setup worker)
-if [ "$REPO_FRESHLY_REGISTERED" = true ] && [ -f "$STATE_FILE" ]; then
-    rm -f "$STATE_FILE"
-fi
-
-if [ "$FULL" = false ] && [ -f "$STATE_FILE" ]; then
-    LAST_COMMIT=$(cat "$STATE_FILE")
-    if [ "$LAST_COMMIT" = "$BRANCH_TIP" ]; then
-        echo -e "${YELLOW}[$REPO_NAME] Branch '$LOCAL_BRANCH' is unchanged since last send. Nothing to do.${NC}"
-        exit 0
-    fi
-    if git merge-base --is-ancestor "$LAST_COMMIT" "$LOCAL_BRANCH" 2>/dev/null; then
-        COMMIT_COUNT=$(git rev-list --count "$LAST_COMMIT..$LOCAL_BRANCH")
-        echo -e "${BLUE}Creating incremental bundle ($COMMIT_COUNT new commits)...${NC}"
-        git bundle create "$BUNDLE_FILE" "$LAST_COMMIT..$LOCAL_BRANCH" --
-    else
-        echo -e "${BLUE}Creating full bundle of '$LOCAL_BRANCH'...${NC}"
-        git bundle create "$BUNDLE_FILE" "$LOCAL_BRANCH" --
-    fi
-else
-    echo -e "${BLUE}Creating full bundle of '$LOCAL_BRANCH'...${NC}"
-    git bundle create "$BUNDLE_FILE" "$LOCAL_BRANCH" --
-fi
+echo -e "${BLUE}Creating bundle of '$LOCAL_BRANCH'...${NC}"
+git bundle create "$BUNDLE_FILE" "$LOCAL_BRANCH" --
 
 BUNDLE_SIZE=$(du -h "$BUNDLE_FILE" | cut -f1)
 echo -e "Bundle: ${BUNDLE_SIZE}"
@@ -259,10 +225,6 @@ fi
 # Clean up the bundle
 rm -f "$BUNDLE"
 REMOTE_APPLY
-
-# Record state for future incremental sends
-mkdir -p "$(dirname "$STATE_FILE")"
-echo "$BRANCH_TIP" > "$STATE_FILE"
 
 DISPLAY_PATH="${REMOTE_PATH:-"<default>/$REPO_NAME"}"
 echo -e "${GREEN}[$REPO_NAME] Sent ${LOCAL_BRANCH} → ${REPO_NAME}@${REMOTE_BRANCH} ($BRANCH_TIP) at $HOST:$DISPLAY_PATH${NC}"

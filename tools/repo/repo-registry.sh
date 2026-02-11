@@ -124,12 +124,9 @@ remove_worker_repo() {
 # Resolve repo name for sending to a worker.
 # Checks for collisions and auto-registers.
 # Sets RESOLVED_REPO_NAME on success.
-# Sets REPO_FRESHLY_REGISTERED=true if the repo was just registered for the first time.
 # Arguments: <worker> <repo_name> <local_path> <explicit: true|false>
 resolve_worker_repo_for_send() {
     local WORKER="$1" REPO_NAME="$2" LOCAL_PATH="$3" EXPLICIT="$4"
-
-    REPO_FRESHLY_REGISTERED=false
 
     ensure_workers_file || return 1
 
@@ -194,7 +191,6 @@ resolve_worker_repo_for_send() {
     # Register
     if register_worker_repo "$WORKER" "$REPO_NAME" "$LOCAL_PATH"; then
         echo -e "${GREEN}[OK]${NC} Registered repo '${REPO_NAME}' on worker '${WORKER}' -> ${LOCAL_PATH}" >&2
-        REPO_FRESHLY_REGISTERED=true
     else
         echo -e "${YELLOW}[WARN]${NC} Could not update repo registry (permission denied?). Try: sudo hive init" >&2
     fi
