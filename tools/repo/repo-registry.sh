@@ -3,7 +3,7 @@
 #
 # Source this file to get registry + refspec functions, or run directly for CLI commands.
 #
-# Repos are tracked per-worker inside /etc/hive/workers.json:
+# Repos are tracked per-worker inside ~/.hive/workers.json:
 #   workers.<name>.repos.<repo_name> = "/local/path/to/repo"
 #
 # Refspec format: <local_branch>[:<worker_repo_name>][@<worker_branch>]
@@ -12,7 +12,7 @@
 #   main@dev          → local=main,  repo=<basename>, remote=dev
 #   main:myapp-v2@dev → local=main,  repo=myapp-v2,   remote=dev
 
-HIVE_DIR="${HIVE_DIR:-/etc/hive}"
+HIVE_DIR="${HIVE_DIR:-$HOME/.hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # Colors (safe to re-declare)
@@ -192,7 +192,7 @@ resolve_worker_repo_for_send() {
     if register_worker_repo "$WORKER" "$REPO_NAME" "$LOCAL_PATH"; then
         echo -e "${GREEN}[OK]${NC} Registered repo '${REPO_NAME}' on worker '${WORKER}' -> ${LOCAL_PATH}" >&2
     else
-        echo -e "${YELLOW}[WARN]${NC} Could not update repo registry (permission denied?). Try: sudo chmod 666 $WORKERS_FILE" >&2
+        echo -e "${YELLOW}[WARN]${NC} Could not update repo registry (permission denied?). Try: sudo hive init" >&2
     fi
     RESOLVED_REPO_NAME="$REPO_NAME"
 }

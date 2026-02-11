@@ -4,7 +4,7 @@
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/hive}"
+HIVE_DIR="${HIVE_DIR:-$HOME/.hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 HIVE_SSH_DIR="$HIVE_DIR/ssh"
 
