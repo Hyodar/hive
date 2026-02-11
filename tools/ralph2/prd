@@ -100,10 +100,10 @@ echo ""
 
 case "$TOOL" in
     claude)
-        exec claude --dangerously-skip-permissions -p "$PROMPT"
+        exec claude --dangerously-skip-permissions --append-system-prompt "$PROMPT"
         ;;
     codex)
-        exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" "$PROMPT"
+        exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex" -c 'model_reasoning_effort="xhigh"' "$PROMPT"
         ;;
     amp)
         echo "$PROMPT" | exec amp --dangerously-allow-all

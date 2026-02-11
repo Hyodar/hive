@@ -153,7 +153,7 @@ exec claude --dangerously-skip-permissions "$@"
 EOF
 cat > "$BIN_DIR/xcodex" << 'EOF'
 #!/bin/bash
-exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.2-codex xhigh" "$@"
+exec codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex" -c 'model_reasoning_effort="xhigh"' "$@"
 EOF
 cat > "$BIN_DIR/xamp" << 'EOF'
 #!/bin/bash

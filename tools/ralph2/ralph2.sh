@@ -424,7 +424,7 @@ for i in $(seq 1 $MAX_ITERATIONS); do
             OUTPUT=$(claude --dangerously-skip-permissions --print -p "$RALPH_PROMPT" 2>&1 | tee /dev/stderr) || true
             ;;
         codex)
-            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex xhigh" "$RALPH_PROMPT" 2>&1 | tee /dev/stderr) || true
+            OUTPUT=$(codex --dangerously-bypass-approvals-and-sandbox -m "gpt-5.3-codex" -c 'model_reasoning_effort="xhigh"' "$RALPH_PROMPT" 2>&1 | tee /dev/stderr) || true
             ;;
     esac
 
