@@ -92,19 +92,23 @@ lookup_worker_repo_by_path() {
 # Register a repo name on a worker (creates .repos if absent).
 register_worker_repo() {
     local WORKER="$1" REPO_NAME="$2" LOCAL_PATH="$3"
+    local tmp
+    tmp=$(mktemp)
     jq --arg w "$WORKER" --arg r "$REPO_NAME" --arg p "$LOCAL_PATH" \
         '.workers[$w].repos //= {} | .workers[$w].repos[$r] = $p' \
-        "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
-    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"
+    rm -f "$tmp"
 }
 
 # Remove a repo from a worker.
 remove_worker_repo() {
     local WORKER="$1" REPO_NAME="$2"
+    local tmp
+    tmp=$(mktemp)
     jq --arg w "$WORKER" --arg r "$REPO_NAME" \
         'del(.workers[$w].repos[$r])' \
-        "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
-    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"
+    rm -f "$tmp"
 }
 
 # Resolve repo name for sending to a worker.
