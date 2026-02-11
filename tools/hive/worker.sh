@@ -267,7 +267,7 @@ Usage: hive worker setup <host> --name <name> [options]
 Set up a remote machine as a hive worker via SSH.
 
 Arguments:
-  host              SSH host (IP address, hostname, or user@host)
+  host              SSH host (IP address or hostname; accessed as root)
   --name            Tailscale machine name for this worker (also sets hostname)
   --password        Password for the 'worker' user (default: SSH key only)
   --tailscale-key   Tailscale auth key for non-interactive setup
@@ -275,15 +275,15 @@ Arguments:
   --ssh-key         SSH key to use for accessing this machine (stored in metadata)
 
 This will:
-  1. Install git on the remote machine
+  1. SSH to the machine as root and install git
   2. Send the agent-setup repo via git bundle
   3. Run the full worker installation (AI tools, desktop, etc.)
      - Sets hostname to the given name
      - Creates a 'worker' sudo user (NOPASSWD)
-     - Copies SSH keys to the worker user
-  4. Copy Telegram config from this manager
-  5. Register the worker (SSH via worker@<name>)
-  6. Open an interactive SSH session for final config (tailscale up)
+  4. Set up the SSH key for the worker user
+  5. Copy Telegram config from this manager
+  6. Register the worker (SSH via worker@<name>)
+  7. Open an interactive SSH session for final config (tailscale up)
      (skipped when --tailscale-key is provided)
 EOF
                 exit 0
@@ -306,6 +306,10 @@ EOF
 
     ensure_workers_file
 
+    # Force root access for initial provisioning
+    BARE_HOST="${HOST#*@}"
+    ROOT_HOST="root@$BARE_HOST"
+
     # Resolve SSH identity: --ssh-key flag for setup
     local SETUP_SSH_ID=""
     [ -n "$SSH_KEY" ] && SETUP_SSH_ID="-i $SSH_KEY"
@@ -315,7 +319,7 @@ EOF
     echo "  Hive Worker Setup: $NAME"
     echo "========================================"
     echo -e "${NC}"
-    echo "  Host:      $HOST"
+    echo "  Host:      $BARE_HOST (as root for setup)"
     echo "  Name:      $NAME"
     echo "  Hostname:  will be set to '$NAME'"
     echo "  User:      'worker' (sudo, NOPASSWD)"
@@ -361,19 +365,19 @@ EOF
     fi
 
     echo ""
-    echo -e "${BLUE}[1/6]${NC} Installing git on remote..."
-    ssh $SETUP_SSH_ID "$HOST" "apt-get update -qq && apt-get install -y -qq git" 2>/dev/null || {
+    echo -e "${BLUE}[1/7]${NC} Installing git on remote..."
+    ssh $SETUP_SSH_ID "$ROOT_HOST" "apt-get update -qq && apt-get install -y -qq git" 2>/dev/null || {
         echo -e "${YELLOW}[WARN]${NC} Could not install git (may need sudo or already installed)"
     }
 
-    echo -e "${BLUE}[2/6]${NC} Sending agent-setup repo..."
+    echo -e "${BLUE}[2/7]${NC} Sending agent-setup repo..."
     BUNDLE_FILE=$(mktemp /tmp/agent-setup-XXXXXX.bundle)
     trap "rm -f '$BUNDLE_FILE'" EXIT
     git -C "$REPO_DIR" bundle create "$BUNDLE_FILE" --all -- 2>/dev/null
-    scp $SETUP_SSH_ID -q "$BUNDLE_FILE" "$HOST:/tmp/agent-setup.bundle"
-    ssh $SETUP_SSH_ID "$HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
+    scp $SETUP_SSH_ID -q "$BUNDLE_FILE" "$ROOT_HOST:/tmp/agent-setup.bundle"
+    ssh $SETUP_SSH_ID "$ROOT_HOST" "rm -rf ~/agent-setup && git clone /tmp/agent-setup.bundle ~/agent-setup && rm -f /tmp/agent-setup.bundle"
 
-    echo -e "${BLUE}[3/6]${NC} Running worker installation..."
+    echo -e "${BLUE}[3/7]${NC} Running worker installation..."
     INSTALL_ARGS="--name '$NAME'"
     if [ -n "$PASSWORD" ]; then
         INSTALL_ARGS="$INSTALL_ARGS --password '$PASSWORD'"
@@ -384,26 +388,43 @@ EOF
     if [ "$NO_DESKTOP" = true ]; then
         INSTALL_ARGS="$INSTALL_ARGS --no-desktop"
     fi
-    ssh $SETUP_SSH_ID -t "$HOST" "cd ~/agent-setup && sudo bash tools/hive/install-worker.sh $INSTALL_ARGS"
+    ssh $SETUP_SSH_ID -t "$ROOT_HOST" "cd ~/agent-setup && bash tools/hive/install-worker.sh $INSTALL_ARGS"
 
-    echo -e "${BLUE}[4/6]${NC} Copying Telegram config..."
+    echo -e "${BLUE}[4/7]${NC} Setting up SSH key for worker user..."
+    if [ -n "$SSH_KEY" ] && [ -f "${SSH_KEY}.pub" ]; then
+        scp $SETUP_SSH_ID -q "${SSH_KEY}.pub" "$ROOT_HOST:/tmp/hive_setup_key.pub"
+        ssh $SETUP_SSH_ID "$ROOT_HOST" "
+            mkdir -p /home/worker/.ssh
+            cat /tmp/hive_setup_key.pub >> /home/worker/.ssh/authorized_keys
+            sort -u -o /home/worker/.ssh/authorized_keys /home/worker/.ssh/authorized_keys
+            chown -R worker:worker /home/worker/.ssh
+            chmod 700 /home/worker/.ssh
+            chmod 600 /home/worker/.ssh/authorized_keys
+            rm -f /tmp/hive_setup_key.pub
+        "
+        echo -e "${GREEN}[OK]${NC} SSH key added to worker user"
+    else
+        echo -e "${GREEN}[OK]${NC} SSH keys inherited from root"
+    fi
+
+    echo -e "${BLUE}[5/7]${NC} Copying Telegram config..."
     TG_CONFIG="$HIVE_DIR/telegram_config.json"
     if [ -f "$TG_CONFIG" ]; then
-        scp $SETUP_SSH_ID -q "$TG_CONFIG" "$HOST:/etc/hive/telegram_config.json"
-        ssh $SETUP_SSH_ID "$HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
+        scp $SETUP_SSH_ID -q "$TG_CONFIG" "$ROOT_HOST:/etc/hive/telegram_config.json"
+        ssh $SETUP_SSH_ID "$ROOT_HOST" "systemctl restart agent-telegram-bot 2>/dev/null || true"
         echo -e "${GREEN}[OK]${NC} Telegram config copied"
     else
         echo -e "${YELLOW}[WARN]${NC} No Telegram config found. Run 'hive init' first."
     fi
 
-    echo -e "${BLUE}[5/6]${NC} Registering worker..."
+    echo -e "${BLUE}[6/7]${NC} Registering worker..."
     if [ -n "$SSH_KEY" ]; then
         worker_add "$NAME" --host "worker@$NAME" --ssh-key "$SSH_KEY"
     else
         worker_add "$NAME" --host "worker@$NAME"
     fi
 
-    echo -e "${BLUE}[6/6]${NC} Setup complete!"
+    echo -e "${BLUE}[7/7]${NC} Setup complete!"
     echo ""
     echo -e "${GREEN}========================================"
     echo "  Worker '$NAME' is ready"
@@ -421,8 +442,6 @@ EOF
         echo "  exit                                  # When done"
         echo ""
         echo -e "${BLUE}Connecting as worker@...${NC}"
-        # SSH as worker user to the original host to run tailscale up
-        BARE_HOST="${HOST#*@}"
         ssh $SETUP_SSH_ID -t "worker@$BARE_HOST" || true
     fi
 }
