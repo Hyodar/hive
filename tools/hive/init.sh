@@ -66,6 +66,10 @@ else
     echo -e "${YELLOW}[SKIP]${NC} Workers registry exists ($WORKER_COUNT workers)"
 fi
 
+# Workers registry must be writable by non-root users so that
+# 'hive repo send' can auto-register repos without sudo.
+chmod 666 "$WORKERS_FILE"
+
 # ---- Telegram bot ----
 
 echo -e "${BLUE}[3/3]${NC} Setting up Telegram bot..."
