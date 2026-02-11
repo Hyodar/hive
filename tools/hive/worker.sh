@@ -4,7 +4,7 @@
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/hive}"
+HIVE_DIR="${HIVE_DIR:-$HOME/.hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 HIVE_SSH_DIR="$HIVE_DIR/ssh"
 
@@ -86,16 +86,19 @@ worker_add() {
     fi
 
     local ADDED=$(date -Iseconds)
+    local tmp
+    tmp=$(mktemp)
     if [ -n "$SSH_KEY" ]; then
         jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" --arg ssh_key "$SSH_KEY" \
             '.workers[$name] = {"host": $host, "name": $name, "added": $added, "ssh_key": $ssh_key}' \
-            "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+            "$WORKERS_FILE" > "$tmp"
     else
         jq --arg name "$NAME" --arg host "$HOST" --arg added "$ADDED" \
             '.workers[$name] = {"host": $host, "name": $name, "added": $added}' \
-            "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
+            "$WORKERS_FILE" > "$tmp"
     fi
-    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+    cat "$tmp" > "$WORKERS_FILE"
+    rm -f "$tmp"
 
     echo -e "${GREEN}[OK]${NC} Worker '$NAME' registered (host: $HOST)"
 }
@@ -140,8 +143,11 @@ worker_rm() {
         exit 1
     fi
 
-    jq --arg name "$NAME" 'del(.workers[$name])' "$WORKERS_FILE" > "$WORKERS_FILE.tmp"
-    mv "$WORKERS_FILE.tmp" "$WORKERS_FILE"
+    local tmp
+    tmp=$(mktemp)
+    jq --arg name "$NAME" 'del(.workers[$name])' "$WORKERS_FILE" > "$tmp"
+    cat "$tmp" > "$WORKERS_FILE"
+    rm -f "$tmp"
 
     echo -e "${GREEN}[OK]${NC} Worker '$NAME' removed"
 }

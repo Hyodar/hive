@@ -4,7 +4,14 @@
 
 set -e
 
-CONFIG_DIR="/etc/hive"
+# Respect HIVE_DIR if set (from hive init or export), else auto-detect
+if [ -n "${HIVE_DIR:-}" ]; then
+    CONFIG_DIR="$HIVE_DIR"
+elif [ "$EUID" -eq 0 ]; then
+    CONFIG_DIR="/etc/hive"
+else
+    CONFIG_DIR="$HOME/.hive"
+fi
 CONFIG_FILE="$CONFIG_DIR/telegram_config.json"
 
 # Colors
@@ -20,13 +27,6 @@ echo "========================================"
 echo "  Telegram Bot Setup"
 echo "========================================"
 echo -e "${NC}"
-
-# Check if running as root for system config
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}[WARN]${NC} Running without root. Config will be saved to user directory."
-    CONFIG_DIR="$HOME/.config/hive"
-    CONFIG_FILE="$CONFIG_DIR/telegram_config.json"
-fi
 
 mkdir -p "$CONFIG_DIR"
 

@@ -4,7 +4,16 @@
 
 set -e
 
-HIVE_DIR="/etc/hive"
+# Resolve HIVE_DIR: env override > ~/.hive > /etc/hive (workers) > default ~/.hive
+if [ -z "${HIVE_DIR:-}" ]; then
+    if [ -d "$HOME/.hive" ]; then
+        HIVE_DIR="$HOME/.hive"
+    elif [ -d "/etc/hive" ]; then
+        HIVE_DIR="/etc/hive"
+    else
+        HIVE_DIR="$HOME/.hive"
+    fi
+fi
 
 # Resolve HIVE_TOOLS: installed location > .source_repo > repo-local
 if [ -d "$HIVE_DIR/tools" ]; then

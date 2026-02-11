@@ -4,11 +4,8 @@
 
 set -e
 
-HIVE_DIR="${HIVE_DIR:-/etc/hive}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN_DIR="/usr/local/bin"
-CONFIG_FILE="$HIVE_DIR/config.json"
-WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # Colors
 RED='\033[0;31m'
@@ -28,6 +25,20 @@ if [ "$EUID" -ne 0 ]; then
     echo -e "${RED}[ERROR]${NC} Please run as root (use sudo)"
     exit 1
 fi
+
+# Determine the invoking user's home directory (not root's)
+if [ -n "${SUDO_USER:-}" ]; then
+    REAL_HOME=$(eval echo ~"$SUDO_USER")
+    REAL_USER="$SUDO_USER"
+else
+    REAL_HOME="$HOME"
+    REAL_USER="$USER"
+fi
+
+HIVE_DIR="$REAL_HOME/.hive"
+export HIVE_DIR
+CONFIG_FILE="$HIVE_DIR/config.json"
+WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # ---- Install hive to PATH ----
 
@@ -91,13 +102,19 @@ else
     echo -e "${YELLOW}[SKIP]${NC} Python venv exists"
 fi
 
-cp "$SCRIPT_DIR/tools/telegram-bot/agent-telegram-bot.service" /etc/systemd/system/
+# Install systemd service, replacing /etc/hive with the actual HIVE_DIR
+sed "s|/etc/hive|$HIVE_DIR|g" "$SCRIPT_DIR/tools/telegram-bot/agent-telegram-bot.service" \
+    > /etc/systemd/system/agent-telegram-bot.service
 systemctl daemon-reload
 
 echo ""
 echo "The Telegram bot will be shared with all workers."
 echo ""
 bash "$SCRIPT_DIR/tools/telegram-bot/tgsetup"
+
+# ---- Fix ownership ----
+# Since init runs as root, ensure the invoking user owns their config
+chown -R "$REAL_USER" "$HIVE_DIR"
 
 # ---- Done ----
 

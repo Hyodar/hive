@@ -3,7 +3,7 @@
 #
 # Source this file to get registry + refspec functions, or run directly for CLI commands.
 #
-# Repos are tracked per-worker inside /etc/hive/workers.json:
+# Repos are tracked per-worker inside ~/.hive/workers.json:
 #   workers.<name>.repos.<repo_name> = "/local/path/to/repo"
 #
 # Refspec format: <local_branch>[:<worker_repo_name>][@<worker_branch>]
@@ -12,7 +12,7 @@
 #   main@dev          → local=main,  repo=<basename>, remote=dev
 #   main:myapp-v2@dev → local=main,  repo=myapp-v2,   remote=dev
 
-HIVE_DIR="${HIVE_DIR:-/etc/hive}"
+HIVE_DIR="${HIVE_DIR:-$HOME/.hive}"
 WORKERS_FILE="$HIVE_DIR/workers.json"
 
 # Colors (safe to re-declare)
@@ -94,10 +94,15 @@ register_worker_repo() {
     local WORKER="$1" REPO_NAME="$2" LOCAL_PATH="$3"
     local tmp
     tmp=$(mktemp)
-    jq --arg w "$WORKER" --arg r "$REPO_NAME" --arg p "$LOCAL_PATH" \
+    if jq --arg w "$WORKER" --arg r "$REPO_NAME" --arg p "$LOCAL_PATH" \
         '.workers[$w].repos //= {} | .workers[$w].repos[$r] = $p' \
-        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"
-    rm -f "$tmp"
+        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"; then
+        rm -f "$tmp"
+        return 0
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 # Remove a repo from a worker.
@@ -105,10 +110,15 @@ remove_worker_repo() {
     local WORKER="$1" REPO_NAME="$2"
     local tmp
     tmp=$(mktemp)
-    jq --arg w "$WORKER" --arg r "$REPO_NAME" \
+    if jq --arg w "$WORKER" --arg r "$REPO_NAME" \
         'del(.workers[$w].repos[$r])' \
-        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"
-    rm -f "$tmp"
+        "$WORKERS_FILE" > "$tmp" && cat "$tmp" > "$WORKERS_FILE"; then
+        rm -f "$tmp"
+        return 0
+    else
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 # Resolve repo name for sending to a worker.
@@ -179,8 +189,11 @@ resolve_worker_repo_for_send() {
     fi
 
     # Register
-    register_worker_repo "$WORKER" "$REPO_NAME" "$LOCAL_PATH"
-    echo -e "${GREEN}[OK]${NC} Registered repo '${REPO_NAME}' on worker '${WORKER}' -> ${LOCAL_PATH}" >&2
+    if register_worker_repo "$WORKER" "$REPO_NAME" "$LOCAL_PATH"; then
+        echo -e "${GREEN}[OK]${NC} Registered repo '${REPO_NAME}' on worker '${WORKER}' -> ${LOCAL_PATH}" >&2
+    else
+        echo -e "${YELLOW}[WARN]${NC} Could not update repo registry (permission denied?). Try: sudo hive init" >&2
+    fi
     RESOLVED_REPO_NAME="$REPO_NAME"
 }
 
