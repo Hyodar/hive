@@ -1,6 +1,6 @@
 #!/bin/bash
 # Telegram Bot Setup Script
-# Configures the Agent Telegram Bot
+# Collects bot token and chat ID for Telegram notifications
 
 set -e
 
@@ -17,7 +17,7 @@ NC='\033[0m'
 
 echo -e "${CYAN}"
 echo "========================================"
-echo "  Agent Telegram Bot Setup"
+echo "  Telegram Bot Setup"
 echo "========================================"
 echo -e "${NC}"
 
@@ -32,11 +32,11 @@ mkdir -p "$CONFIG_DIR"
 
 # Check if already configured
 if [ -f "$CONFIG_FILE" ]; then
-    CURRENT_BOUND=$(jq -r '.bound // false' "$CONFIG_FILE" 2>/dev/null)
-    if [ "$CURRENT_BOUND" = "true" ]; then
-        echo -e "${GREEN}Bot is already configured and bound!${NC}"
+    CURRENT_TOKEN=$(jq -r '.bot_token // ""' "$CONFIG_FILE" 2>/dev/null)
+    CURRENT_CHAT=$(jq -r '.chat_id // ""' "$CONFIG_FILE" 2>/dev/null)
+    if [ -n "$CURRENT_TOKEN" ] && [ -n "$CURRENT_CHAT" ]; then
+        echo -e "${GREEN}Telegram is already configured.${NC}"
         echo ""
-        CURRENT_CHAT=$(jq -r '.chat_id // "unknown"' "$CONFIG_FILE")
         echo "Chat ID: $CURRENT_CHAT"
         echo ""
         read -p "Do you want to reconfigure? (y/N): " RECONFIGURE
@@ -48,7 +48,7 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 echo ""
-echo -e "${BLUE}Step 1: Create a Telegram Bot${NC}"
+echo -e "${BLUE}Step 1: Bot Token${NC}"
 echo "----------------------------------------"
 echo "1. Open Telegram and search for @BotFather"
 echo "2. Send /newbot and follow the instructions"
@@ -68,72 +68,36 @@ if ! echo "$BOT_TOKEN" | grep -qE "^[0-9]+:[A-Za-z0-9_-]+$"; then
 fi
 
 echo ""
-echo -e "${BLUE}Step 2: Set Binding Phrase${NC}"
+echo -e "${BLUE}Step 2: Chat ID${NC}"
 echo "----------------------------------------"
-echo "This is a secret phrase you'll send to the bot to link it to your chat."
-echo "Default: BIND_AGENT_BOT"
+echo "To get your chat ID:"
+echo "1. Send a message to your bot on Telegram"
+echo "2. Visit: https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates"
+echo "3. Look for \"chat\":{\"id\":YOUR_CHAT_ID}"
 echo ""
 
-read -p "Enter binding phrase (press Enter for default): " BINDING_PHRASE
-BINDING_PHRASE=${BINDING_PHRASE:-BIND_AGENT_BOT}
+read -p "Enter your chat ID: " CHAT_ID
 
-# Save initial config
+if [ -z "$CHAT_ID" ]; then
+    echo -e "${RED}[ERROR]${NC} Chat ID cannot be empty"
+    exit 1
+fi
+
+# Save config
 cat > "$CONFIG_FILE" << EOF
 {
     "bot_token": "$BOT_TOKEN",
-    "chat_id": "",
-    "binding_phrase": "$BINDING_PHRASE",
-    "bound": false
+    "chat_id": "$CHAT_ID",
+    "bound": true
 }
 EOF
 
 chmod 600 "$CONFIG_FILE"
 
 echo ""
-echo -e "${GREEN}[SUCCESS]${NC} Configuration saved!"
+echo -e "${GREEN}[OK]${NC} Telegram configuration saved!"
 echo ""
-echo -e "${BLUE}Step 3: Start the Bot Service${NC}"
-echo "----------------------------------------"
-
-if [ "$EUID" -eq 0 ]; then
-    echo "Starting the telegram bot service..."
-    systemctl enable agent-telegram-bot
-    systemctl restart agent-telegram-bot
-
-    # Wait for service to start
-    sleep 2
-
-    if systemctl is-active --quiet agent-telegram-bot; then
-        echo -e "${GREEN}[SUCCESS]${NC} Service started successfully!"
-    else
-        echo -e "${RED}[ERROR]${NC} Service failed to start. Check logs with:"
-        echo "  journalctl -u agent-telegram-bot -f"
-        exit 1
-    fi
-else
-    echo -e "${YELLOW}[INFO]${NC} Run as root to start the systemd service, or run manually:"
-    echo "  python3 $CONFIG_DIR/agent_telegram_bot.py"
-fi
-
-echo ""
-echo -e "${BLUE}Step 4: Bind the Bot to Your Chat${NC}"
-echo "----------------------------------------"
-echo "1. Open Telegram and find your bot (search for its username)"
-echo "2. Start a conversation with /start"
-echo "3. Send the binding phrase: $BINDING_PHRASE"
-echo ""
-echo "The bot will confirm when binding is successful."
-echo ""
-
-echo -e "${CYAN}"
-echo "========================================"
-echo "  Setup Complete!"
-echo "========================================"
-echo -e "${NC}"
-echo ""
-echo "After binding, you can use:"
+echo "You can use:"
 echo "  alertme --title 'Test' --description 'Hello' --status success"
 echo "  promptme --title 'Question' --description 'Yes or no?' --timeout 60"
 echo ""
-echo "Check service status: systemctl status agent-telegram-bot"
-echo "View logs: journalctl -u agent-telegram-bot -f"

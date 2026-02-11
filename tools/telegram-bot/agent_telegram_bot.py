@@ -53,7 +53,6 @@ class AgentTelegramBot:
         return {
             "bot_token": "",
             "chat_id": "",
-            "binding_phrase": "BIND_AGENT_BOT",
             "bound": False
         }
 
@@ -67,8 +66,7 @@ class AgentTelegramBot:
         """Handle /start command."""
         await update.message.reply_text(
             "Agent Telegram Bot\n\n"
-            f"Send the binding phrase to link this chat.\n"
-            f"Current status: {'Bound' if self.config['bound'] else 'Not bound'}"
+            f"Status: {'Bound' if self.config['bound'] else 'Not bound'}"
         )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -79,19 +77,6 @@ class AgentTelegramBot:
         text = update.message.text.strip()
         chat_id = str(update.message.chat_id)
         reply_to = update.message.reply_to_message
-
-        # Check for binding phrase
-        if text == self.config["binding_phrase"] and not self.config["bound"]:
-            self.config["chat_id"] = chat_id
-            self.config["bound"] = True
-            self.save_config()
-            await update.message.reply_text(
-                "\u2705 Bot successfully bound to this chat!\n"
-                f"Chat ID: {chat_id}\n\n"
-                "You will now receive alerts and prompts from your agent."
-            )
-            logger.info(f"Bot bound to chat {chat_id}")
-            return
 
         # Handle replies to prompt messages
         if reply_to and reply_to.message_id:
