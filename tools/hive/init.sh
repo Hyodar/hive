@@ -77,7 +77,6 @@ if [ ! -f "$HIVE_DIR/telegram_config.json" ]; then
 {
     "bot_token": "",
     "chat_id": "",
-    "binding_phrase": "BIND_AGENT_BOT",
     "bound": false
 }
 EOF
