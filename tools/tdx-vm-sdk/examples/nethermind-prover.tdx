@@ -1,0 +1,184 @@
+"""Example TDXfile: Nethermind node + custom prover in a TDX VM.
+
+This shows the full range of the SDK:
+- Building custom packages from source
+- Full VM configurability
+- Services with systemd escape hatches
+- Arbitrary build-time and boot-time scripts
+- Profiles for dev vs production
+"""
+
+from tdx import Image, Build, Kernel, env
+
+# --- Image definition ---
+
+image = Image(
+    name="nethermind-prover",
+    base="debian/bookworm",
+)
+
+# --- Kernel: TDX defaults, with one extra knob ---
+
+image.kernel = Kernel.tdx(
+    version="6.8",
+    cmdline="console=hvc0 root=/dev/vda2 ro quiet mitigations=auto,nosmt",
+    extra_config={
+        "CONFIG_VHOST_VSOCK": "y",
+    },
+)
+
+# --- Full VM knobs ---
+
+image.init = "systemd"
+image.default_target = "minimal.target"
+image.firmware = "ovmf"
+image.docs = False
+image.locale = None
+
+image.partitions(
+    Image.partition("/", fs="ext4", size="2G"),
+    Image.partition("/var", fs="ext4", size="20G"),
+)
+
+image.encryption(type="luks2", key_source="tpm")
+
+image.network(
+    vsock=True,
+    firewall_rules=[
+        "ACCEPT tcp 8545",    # JSON-RPC
+        "ACCEPT tcp 30303",   # P2P
+        "DROP all",
+    ],
+)
+
+# --- System packages ---
+
+image.install("iptables", "busybox", "ca-certificates", "curl")
+
+# --- Build custom packages from source ---
+
+nethermind = Build.dotnet(
+    name="nethermind",
+    src="./nethermind/",
+    sdk_version="10.0",
+    project="src/Nethermind/Nethermind.Runner",
+    output="/opt/nethermind/",
+    self_contained=True,
+)
+
+prover = Build.go(
+    name="my-prover",
+    src="./prover/",
+    go_version="1.22",
+    ldflags="-s -w -X main.version=1.0.0",
+    output="/usr/local/bin/my-prover",
+    env={"CGO_ENABLED": "0"},
+)
+
+tdx_init = Build.rust(
+    name="tdx-init",
+    src="./tdx-init/",
+    toolchain="stable",
+    output="/usr/local/bin/tdx-init",
+    build_deps=["libssl-dev", "pkg-config"],
+)
+
+# A tool with a custom build system
+monitoring = Build.script(
+    name="monitoring-agent",
+    src="./monitoring/",
+    build_script="make release STATIC=1",
+    artifacts={
+        "build/agent": "/usr/local/bin/monitoring-agent",
+        "build/default.conf": "/etc/monitoring/config.toml",
+    },
+    build_deps=["cmake", "libssl-dev"],
+)
+
+image.build(nethermind, prover, tdx_init, monitoring)
+
+# --- Services ---
+
+image.service(
+    name="nethermind",
+    exec="/opt/nethermind/nethermind --config mainnet --datadir /var/lib/nethermind",
+    after=["network-online.target", "tdx-boot-init.service"],
+    restart="always",
+    user="nethermind",
+    extra_unit={
+        "Service": {
+            "MemoryMax": "8G",
+            "LimitNOFILE": "65535",
+            "ProtectSystem": "strict",
+            "ReadWritePaths": ["/var/lib/nethermind"],
+        },
+    },
+)
+
+image.service(
+    name="my-prover",
+    exec="/usr/local/bin/my-prover --rpc http://localhost:8545",
+    after=["nethermind.service"],
+    requires=["nethermind.service"],
+    user="prover",
+    restart="on-failure",
+)
+
+image.service(
+    name="monitoring-agent",
+    exec="/usr/local/bin/monitoring-agent --config /etc/monitoring/config.toml",
+    after=["network-online.target"],
+    restart="always",
+)
+
+# --- Files and templates ---
+
+image.file("/etc/motd", content="Nethermind TDX Prover Node\n")
+
+image.template(
+    src="./configs/nethermind.cfg.j2",
+    dest="/etc/nethermind/config.json",
+    vars={
+        "network": "mainnet",
+        "rpc_port": 8545,
+        "rpc_host": "127.0.0.1",
+    },
+)
+
+# --- Escape hatches: arbitrary build-time shell ---
+
+# Debloat systemd (like nethermind-tdx's debloat-systemd.sh)
+image.run("""
+rm -rf /usr/lib/systemd/system/getty*
+rm -rf /usr/lib/systemd/system/serial-getty*
+rm -rf /usr/lib/systemd/system/systemd-homed*
+rm -rf /usr/lib/systemd/system/systemd-userdbd*
+rm -rf /usr/lib/systemd/system/systemd-firstboot*
+""")
+
+# Create users and directories
+image.run("""
+useradd -r -s /usr/sbin/nologin nethermind
+useradd -r -s /usr/sbin/nologin prover
+mkdir -p /var/lib/nethermind
+chown nethermind:nethermind /var/lib/nethermind
+""")
+
+# Or run a whole script
+image.run_script("./scripts/harden-kernel-params.sh")
+
+# --- Escape hatch: boot-time commands ---
+
+# This runs at VM boot (like tdx-init) — disk encryption setup, key fetch, etc.
+image.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
+
+# --- Profiles ---
+
+with image.profile("dev"):
+    image.ssh(enabled=True, key_delivery="http")
+    image.install("strace", "gdb", "vim", "htop", "bash-completion")
+
+with image.profile("azure"):
+    image.cloud = "azure"
+    image.secure_boot = True
+    image.attestation_backend = "azure"
