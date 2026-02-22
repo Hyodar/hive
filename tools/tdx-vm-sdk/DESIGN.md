@@ -803,21 +803,23 @@ with img.profile("dev"):
 ```python
 #!/usr/bin/env python3
 from tdx import Image, Build, Kernel
-from tdx.modules.tdx import Tdx
+from tdx.modules.tdxs import Tdxs
 from tdx.modules.init import Init
-from tdx.modules.init.attestation import TdxAttestation
+from tdx.modules.init.encryption import DiskEncryption
+from tdx.modules.init.ssh import SshKeyDelivery
 
 img = Image(build_dir="build", base="debian/bookworm")
+img.kernel = Kernel.tdx(version="6.8")
 
-# TDX confidential computing
-tdx = Tdx(firmware="ovmf-tdx", measurement_backend="rtmr",
-          kernel=Kernel.tdx(version="6.8"))
-tdx.apply(img)
-
-# Init — attestation before services start
+# Init — disk encryption before systemd
 init = Init(handoff="systemd")
-init.stage(TdxAttestation(backend="rtmr"))
+init.add(DiskEncryption(format="on_initialize", key_strategy="random", tpm=True))
+init.add(SshKeyDelivery(method="http"))
 init.apply(img)
+
+# TDXs quote service
+tdxs = Tdxs(issuer="tdx", validator="tdx")
+tdxs.apply(img)
 
 img.install("ca-certificates")
 img.debloat()
@@ -826,6 +828,7 @@ img.build(Build.go(
     go_version="1.22", output="/usr/local/bin/my-prover",
 ))
 img.service(name="my-prover", exec="/usr/local/bin/my-prover")
+img.run("usermod -aG tdxs my-prover")
 
 # Bake, measure, deploy
 img.bake()
@@ -840,142 +843,150 @@ Core modules ship with the SDK (`tdx.modules.*`) and provide optional,
 composable functionality. They follow the same module pattern as
 third-party modules (see MODULES.md) but are part of the main library.
 
-Without core modules, the SDK builds a plain Linux VM image. Core modules
-add capabilities — TDX confidential computing, structured init, etc.
+### TDXs — `tdx.modules.tdxs`
 
-### TDX — `tdx.modules.tdx`
+[TDXs](https://github.com/NethermindEth/tdxs) is a TDX Quote Service —
+a daemon that runs inside the VM and provides TDX quote issuance and
+validation to other services via a Unix socket. It supports multiple
+attestation backends (real TDX hardware, Azure, simulator).
 
-Makes the image a TDX confidential VM. Without this module, the SDK
-produces a regular (non-confidential) VM image with no measurement
-support, no TDX firmware, and no TDX kernel config.
-
-What the TDX module adds:
-
-- **Kernel config** — enables TDX guest support (`CONFIG_INTEL_TDX_GUEST`,
-  `CONFIG_TDX_GUEST_DRIVER`, etc.) via `Kernel.tdx()` presets
-- **Firmware** — selects TDX-capable firmware (OVMF-TDX / TDVF)
-- **dm-verity** — configures dm-verity for measured rootfs (RTMR[2])
-- **Measurement** — enables `img.measure()` with the configured backend
-- **Attestation support** — installs guest-side attestation libraries
+The TDXs module builds the `tdxs` binary from source and sets it up as
+a systemd service inside the image. Other services in the VM connect to
+its socket to request attestation quotes or validate incoming quotes.
 
 ```python
 from tdx import Image, Kernel
-from tdx.modules.tdx import Tdx
+from tdx.modules.tdxs import Tdxs
 
 img = Image(build_dir="build", base="debian/bookworm")
+img.kernel = Kernel.tdx(version="6.8")
 
-# Enable TDX confidential computing
-tdx = Tdx(
-    firmware="ovmf-tdx",           # "ovmf-tdx" (default) | "tdvf" | Path("./custom.fd")
-    measurement_backend="rtmr",    # "rtmr" | "azure" | "gcp"
-    dm_verity=True,                # measured rootfs (default True)
-    kernel=Kernel.tdx(version="6.8"),
+# Add tdxs quote service to the image
+tdxs = Tdxs(
+    version="master",                    # git ref to build from
+    issuer="tdx",                        # "tdx" | "azure" | "simulator"
+    validator="tdx",                     # "tdx" | "azure" | "simulator"
+    socket="/run/tdxs/tdxs.sock",        # where the service listens
+    socket_owner="root",
+    socket_group="tdxs",                 # services needing quotes join this group
+    socket_perm="0660",
 )
-tdx.apply(img)
-
-# Now these work:
-img.bake()
-rtmrs = img.measure(backend="rtmr")    # only available after tdx.apply()
+tdxs.apply(img)
 ```
 
-Without the TDX module, `img.measure()` raises an error — there's no
-measurement backend configured. This makes TDX an explicit opt-in:
+This produces:
+
+- Builds the `tdxs` Go binary (via the SDK build cache)
+- Installs it at `/usr/bin/tdxs`
+- Creates a `tdxs` system group
+- Generates `/etc/tdxs/config.yaml` from the parameters
+- Creates `tdxs.service` (systemd) listening on the socket
+- Services that need attestation add themselves to the `tdxs` group
+
+**Usage with other services:**
 
 ```python
-# Plain VM — no TDX
-img = Image(build_dir="build", base="debian/bookworm")
-img.kernel = Kernel(version="6.8")    # generic kernel, no TDX config
-img.bake()
-img.measure()   # → raises: "No measurement backend. Apply a TDX module first."
+from tdx.modules.tdxs import Tdxs
+from tdx_nethermind import Nethermind
+
+tdxs = Tdxs(issuer="tdx", validator="tdx")
+tdxs.apply(img)
+
+nm = Nethermind()
+nm.apply(img, network="mainnet")
+
+# Nethermind's service user gets added to the tdxs group
+# so it can request quotes through the socket
+img.run("usermod -aG tdxs nethermind")
 ```
 
-**Cloud variants** configure cloud-specific attestation:
+**Azure backend:**
 
 ```python
-# Azure Confidential VM
-tdx = Tdx(
-    measurement_backend="azure",
-    secure_boot=True,
-    attestation_endpoint="https://sharedeus.eus.attest.azure.net",
+tdxs = Tdxs(
+    issuer="azure",
+    validator="azure",
+    validator_config={
+        "measurements": {0: "0x1234...", 1: "0x5678..."},
+        "qeSVN": 1,
+        "pceSVN": 1,
+    },
 )
-tdx.apply(img)
-
-# GCP Confidential VM
-tdx = Tdx(
-    measurement_backend="gcp",
-    attestation_endpoint="https://confidentialcomputing.googleapis.com",
-)
-tdx.apply(img)
+tdxs.apply(img)
 ```
 
-**What TDX does to the image** (under the hood):
+**Dev/testing with simulator:**
 
-| Aspect | Without TDX module | With TDX module |
-|--------|-------------------|-----------------|
-| Kernel | Generic config | TDX guest options enabled |
-| Firmware | `ovmf` (standard) | `ovmf-tdx` with measurement support |
-| Rootfs | Plain ext4 | dm-verity hash tree appended |
-| `img.measure()` | Error | Computes RTMRs / PCRs |
-| Boot | Standard systemd | (unchanged, init modules handle this) |
+```python
+with img.profile("dev"):
+    tdxs = Tdxs(issuer="simulator", validator="simulator")
+    tdxs.apply(img)
+```
+
+**What the module does under the hood:**
+
+| Step | What | How |
+|------|------|-----|
+| Build | Compiles `tdxs` from source | `image.build(Build.go(...))` with `make sync-constellation` pre-step |
+| Install | Places binary at `/usr/bin/tdxs` | Build artifact |
+| Config | Generates `/etc/tdxs/config.yaml` | From module parameters |
+| Group | Creates `tdxs` system group | `image.run("groupadd --system tdxs")` |
+| Service | Creates `tdxs.service` | `image.service(name="tdxs", ...)` |
 
 ### Init — `tdx.modules.init`
 
 The init system controls what happens when the VM boots, before the main
-service manager takes over. It is modular: a base `Init` defines the
-boot sequence, and **init stages** are separate modules that plug into it.
+service manager takes over. This is based on
+[tdx-init](https://github.com/NethermindEth/nethermind-tdx/tree/main/init)
+— a Go binary that handles secure disk encryption and SSH key management
+in TDX environments.
+
+The init module is split into a base `Init` and composable **init
+functionalities** that add commands/features to the init binary.
 
 #### Base Init
 
-`Init` is the orchestrator. It:
-
-1. Becomes the first thing that runs after the kernel boots
-2. Executes init stages in order
-3. Hands off to the final target (systemd, busybox, or a custom binary)
+`Init` builds the `tdx-init` binary from source and installs it as the
+system's init program (PID 1). It runs before systemd, executes its
+configured functionalities in order, then hands off to systemd.
 
 ```python
 from tdx.modules.init import Init
 
-init = Init(handoff="systemd")    # after all stages, exec into systemd
+init = Init(
+    version="main",              # git ref to build from
+    handoff="systemd",           # after all steps, exec into systemd
+)
 init.apply(img)
 ```
 
-With no stages, this is essentially a no-op passthrough — boot goes
-straight to systemd. The value comes from composing stages.
+With no functionalities added, init hands off to systemd immediately.
+The value comes from composing functionalities.
 
-#### Init stages
+#### Init functionalities
 
-Each stage is a module that contributes one step to the boot sequence.
-Stages run sequentially, in the order they are added. If any stage fails,
-boot halts (configurable per stage).
+Each functionality is a separate module that adds a feature to the init
+binary's execution. They run in order, before systemd starts.
 
 ```python
 from tdx.modules.init import Init
-from tdx.modules.init.attestation import TdxAttestation
-from tdx.modules.init.secrets import SecretFetch
-from tdx.modules.init.encryption import DiskUnlock
-from tdx.modules.init.network import EarlyNetwork
+from tdx.modules.init.encryption import DiskEncryption
+from tdx.modules.init.ssh import SshKeyDelivery
 
 init = Init(handoff="systemd")
 
-# 1. Bring up minimal networking (needed for secret fetch)
-init.stage(EarlyNetwork(interface="eth0", dhcp=True))
-
-# 2. Perform TDX attestation — generates a quote, verifies it
-init.stage(TdxAttestation(
-    backend="rtmr",
-    quote_path="/run/tdx/quote.bin",
+# 1. Disk encryption — format, encrypt, mount data volumes
+init.add(DiskEncryption(
+    format="on_initialize",         # "always" | "on_initialize" | "never"
+    key_strategy="random",          # "random" | "named_pipe"
+    disk_strategy="largest",        # "largest" | glob pattern
+    tpm=True,                       # persist key in TPM 2.0
 ))
 
-# 3. Fetch secrets from a remote service (post-measurement)
-init.stage(SecretFetch(
-    method="vsock",                      # "vsock" | "https" | "custom"
-    manifest="/etc/tdx/secrets.json",    # which secrets to fetch
-))
-
-# 4. Unlock encrypted volumes using TPM-sealed keys
-init.stage(DiskUnlock(
-    key_source="tpm",
-    volumes=["/dev/vda2"],
+# 2. SSH key delivery — receive SSH keys via HTTP POST after boot
+init.add(SshKeyDelivery(
+    method="http",                  # receive key via HTTP server
+    persist_in_luks=True,           # store SSH key in LUKS token for reboots
 ))
 
 init.apply(img)
@@ -984,139 +995,124 @@ init.apply(img)
 **Boot sequence produced by the above:**
 
 ```
-kernel → init binary
+kernel → tdx-init (PID 1)
            │
-           ├── stage 1: early-network  (bring up eth0)
-           ├── stage 2: tdx-attestation (generate + verify quote)
-           ├── stage 3: secret-fetch    (retrieve secrets via vsock)
-           ├── stage 4: disk-unlock     (unseal TPM key, open LUKS)
+           ├── disk-encryption:
+           │     ├── identify target disk (largest / glob)
+           │     ├── generate encryption key (random / named pipe)
+           │     ├── LUKS2 format (if on_initialize and no header)
+           │     ├── store key in TPM 2.0
+           │     └── open + mount encrypted volume
+           │
+           ├── ssh-key-delivery:
+           │     ├── start HTTP server on port
+           │     ├── wait for POST with SSH public key
+           │     ├── write to /root/.ssh/authorized_keys
+           │     └── optionally persist in LUKS token
            │
            └── handoff → systemd (PID 1)
+                           ├── tdxs.service (quote service)
                            ├── nethermind.service
-                           ├── lighthouse.service
                            └── ...
 ```
 
-#### Custom stages
+#### Custom init functionality
 
-For anything the built-in stages don't cover, use `InitStage` directly:
+For anything the built-in functionalities don't cover, use
+`InitCommand` directly:
 
 ```python
-from tdx.modules.init import Init, InitStage
+from tdx.modules.init import Init, InitCommand
 
 init = Init(handoff="systemd")
 
-# Built-in stage
-init.stage(TdxAttestation(backend="rtmr"))
+init.add(DiskEncryption(format="on_initialize", key_strategy="random"))
 
-# Custom stage — arbitrary script
-init.stage(InitStage(
-    name="custom-setup",
-    exec="/usr/local/bin/my-init-step",
-    env={"MY_VAR": "value"},
+# Custom functionality — arbitrary command run during init
+init.add(InitCommand(
+    name="mount-data",
+    exec="/usr/local/bin/mount-extra-volumes",
+    env={"DATA_DIR": "/data"},
     on_failure="halt",              # "halt" (default) | "continue" | "reboot"
 ))
 
-# Custom stage — inline commands
-init.stage(InitStage(
-    name="mount-data",
-    commands=[
-        "mkdir -p /data",
-        "mount /dev/vdb1 /data",
-    ],
-))
-
-init.apply(img)
-```
-
-#### Init without TDX
-
-The init module system is independent of TDX. You can use it for
-non-confidential VMs too:
-
-```python
-from tdx import Image
-from tdx.modules.init import Init, InitStage
-from tdx.modules.init.encryption import DiskUnlock
-
-img = Image(build_dir="build", base="debian/bookworm")
-
-# No TDX module — plain VM
-init = Init(handoff="systemd")
-init.stage(DiskUnlock(key_source="passphrase"))
-init.stage(InitStage(name="data-mount", commands=["mount /dev/vdb1 /data"]))
 init.apply(img)
 ```
 
 #### Replacing `image.on_boot()`
 
 The init module system replaces the raw `image.on_boot()` escape hatch.
-`image.on_boot()` still works for simple cases, but for anything
-structured, init stages are preferred:
+`image.on_boot()` still works for simple cases (it creates a systemd
+oneshot that runs *after* systemd starts), but init functionalities
+run *before* systemd — which is necessary for disk encryption, key
+setup, and other tasks that must complete before services start.
 
 ```python
-# Old way — unstructured, ordering not guaranteed relative to other boot tasks
+# Old way — runs after systemd starts, unstructured
 image.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
 
-# New way — structured, ordered, composable
+# New way — runs before systemd, structured, composable
 init = Init(handoff="systemd")
-init.stage(TdxAttestation(backend="rtmr"))
-init.stage(SecretFetch(method="vsock"))
+init.add(DiskEncryption(format="on_initialize", tpm=True))
+init.add(SshKeyDelivery(method="http"))
 init.apply(img)
 ```
 
-`image.on_boot()` runs as a systemd oneshot *after* systemd starts.
-Init stages run *before* systemd starts. This is a meaningful difference
-— disk unlocking and attestation typically need to happen before any
-services come up.
-
-### Full example — TDX + Init together
+### Full example — TDXs + Init + application
 
 ```python
 from tdx import Image, Kernel
-from tdx.modules.tdx import Tdx
+from tdx.modules.tdxs import Tdxs
 from tdx.modules.init import Init
-from tdx.modules.init.attestation import TdxAttestation
-from tdx.modules.init.secrets import SecretFetch
+from tdx.modules.init.encryption import DiskEncryption
+from tdx.modules.init.ssh import SshKeyDelivery
 from tdx_nethermind import Nethermind
 
 img = Image(build_dir="build", base="debian/bookworm")
+img.kernel = Kernel.tdx(version="6.8")
 
-# TDX confidential computing
-tdx = Tdx(
-    firmware="ovmf-tdx",
-    measurement_backend="rtmr",
-    kernel=Kernel.tdx(version="6.8"),
-)
-tdx.apply(img)
-
-# Init — boot sequence before systemd
+# Init — disk encryption and SSH key setup before systemd
 init = Init(handoff="systemd")
-init.stage(TdxAttestation(backend="rtmr"))
-init.stage(SecretFetch(method="vsock", manifest="/etc/tdx/secrets.json"))
+init.add(DiskEncryption(
+    format="on_initialize",
+    key_strategy="random",
+    tpm=True,
+))
+init.add(SshKeyDelivery(method="http", persist_in_luks=True))
 init.apply(img)
+
+# TDXs quote service — attestation for services
+tdxs = Tdxs(issuer="tdx", validator="tdx")
+tdxs.apply(img)
 
 # Application
 nm = Nethermind()
 nm.apply(img, network="mainnet")
+img.run("usermod -aG tdxs nethermind")
 
-# Secrets — injected by SecretFetch stage at boot
+# Secrets — injected post-measurement via SSH
 img.secret("JWT_SECRET", dest="/etc/nethermind/jwt.hex", owner="nethermind")
+img.secret_delivery("ssh")
 
 img.debloat()
 img.bake()
 rtmrs = img.measure(backend="rtmr")
 ```
 
-### Shipped init stages
+### Shipped init functionalities
 
-| Stage | Module | Purpose |
-|-------|--------|---------|
-| `TdxAttestation` | `tdx.modules.init.attestation` | Generate TDX quote, optionally verify against expected measurements |
-| `SecretFetch` | `tdx.modules.init.secrets` | Retrieve secrets via vsock/HTTPS after attestation |
-| `DiskUnlock` | `tdx.modules.init.encryption` | Unseal TPM/attestation-bound keys, open LUKS volumes |
-| `EarlyNetwork` | `tdx.modules.init.network` | Bring up network interface before systemd-networkd |
-| `InitStage` | `tdx.modules.init` | Custom stage — arbitrary exec or inline commands |
+| Functionality | Module | Purpose |
+|---------------|--------|---------|
+| `DiskEncryption` | `tdx.modules.init.encryption` | LUKS2 disk encryption with key generation, TPM storage, format strategies |
+| `SshKeyDelivery` | `tdx.modules.init.ssh` | Receive SSH keys via HTTP POST, persist in LUKS token |
+| `InitCommand` | `tdx.modules.init` | Custom command — arbitrary exec during init |
+
+### Shipped core modules summary
+
+| Module | Package | Purpose |
+|--------|---------|---------|
+| `Tdxs` | `tdx.modules.tdxs` | TDX Quote Service — attestation quote issuance and validation daemon |
+| `Init` | `tdx.modules.init` | Pre-systemd init with composable functionalities (disk encryption, SSH) |
 
 ## Generated output structure
 
@@ -1127,29 +1123,27 @@ After `image.emit_mkosi("./out/")`:
 ├── mkosi.conf                  # Distribution, packages, output format
 ├── mkosi.skeleton/             # Files before package manager (image.skeleton())
 ├── mkosi.kernel/
-│   └── .config                 # Kernel config (TDX options if Tdx module applied)
+│   └── .config                 # Kernel config (TDX options via Kernel.tdx())
 ├── mkosi.sync                  # Source sync script (image.sync())
 ├── mkosi.prepare               # Prepare script (image.prepare())
 ├── mkosi.build.d/
-│   ├── 00-nethermind.sh        # Build scripts from Build.* declarations
-│   ├── 01-my-prover.sh
-│   └── 02-raiko.sh
+│   ├── 00-tdxs.sh             # Build tdxs binary (from Tdxs module)
+│   ├── 01-tdx-init.sh         # Build tdx-init binary (from Init module)
+│   ├── 02-nethermind.sh       # Build scripts from Build.* declarations
+│   ├── 03-my-prover.sh
+│   └── 04-raiko.sh
 ├── mkosi.extra/                # Files copied into image
 │   ├── etc/
 │   │   ├── kernel/cmdline
 │   │   ├── motd
 │   │   ├── nethermind/config.json
-│   │   ├── tdx/
-│   │   │   └── secrets.json    # Secret manifest (from SecretFetch stage)
+│   │   ├── tdxs/
+│   │   │   └── config.yaml    # TDXs quote service config (from Tdxs module)
 │   │   └── systemd/system/
+│   │       ├── tdxs.service
 │   │       ├── nethermind.service
 │   │       └── my-prover.service
-│   └── usr/local/lib/tdx/
-│       ├── init                # Init binary (from Init module)
-│       └── stages/             # Init stage scripts (ordered)
-│           ├── 00-tdx-attestation.sh
-│           ├── 01-secret-fetch.sh
-│           └── 02-disk-unlock.sh
+│   └── usr/
 ├── mkosi.postinst              # Post-installation script (image.run())
 ├── mkosi.finalize              # Finalize script (image.finalize())
 ├── mkosi.postoutput            # Post-output script (image.postoutput())
