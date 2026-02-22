@@ -163,30 +163,36 @@ image.ssh(enabled=True, key_delivery="http")
 
 ### Build — reproducible package building
 
-```python
-from tdx import Build
+Builder modules provide flexible compiler sourcing — use precompiled
+releases, custom tarballs via `fetch()`, or build compilers from source:
 
-# Typed builders for common toolchains
-prover = Build.go(
-    name="my-prover",
+```python
+from tdx.builders.go import GoBuild
+from tdx.builders.rust import RustBuild
+from tdx.builders.dotnet import DotnetBuild
+from tdx import Build, fetch
+
+# Go: precompiled official release (default)
+prover = GoBuild(
+    version="1.22.5",
     src="./prover/",
-    go_version="1.22",
     output="/usr/local/bin/my-prover",
+    ldflags="-s -w -X main.version=1.0.0",
 )
 
-raiko = Build.rust(
-    name="raiko",
+# Rust: specific toolchain
+raiko = RustBuild(
+    toolchain="1.83.0",
     src="./raiko/",
-    toolchain="nightly-2024-12-01",
-    features=["tdx", "sgx"],
     output="/usr/local/bin/raiko",
+    features=["tdx", "sgx"],
     build_deps=["libssl-dev", "pkg-config"],
 )
 
-nethermind = Build.dotnet(
-    name="nethermind",
-    src="./nethermind/",
+# .NET
+nethermind = DotnetBuild(
     sdk_version="10.0",
+    src="./nethermind/",
     project="src/Nethermind/Nethermind.Runner",
     output="/opt/nethermind/",
 )
@@ -201,6 +207,47 @@ custom = Build.script(
 )
 
 image.build(prover, raiko, nethermind, custom)
+```
+
+### Fetch — verified resource downloads
+
+```python
+from tdx import fetch, fetch_git
+
+# Download and verify a tarball (returns Path to cached file)
+tarball = fetch(
+    "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz",
+    sha256="904b924d435eaea086515c6fc840b4ab...",
+)
+
+# Fetch a git repo at a specific tag
+src = fetch_git(
+    "https://github.com/golang/go",
+    tag="go1.22.5",
+    sha256="a1b2c3d4e5f6...",  # Hash of file tree contents
+)
+```
+
+### Users
+
+```python
+# System users — created in the image at build time
+image.user("nethermind", system=True, home="/var/lib/nethermind")
+image.user("monitoring", system=True, uid=999)
+```
+
+### Secrets — post-measurement injection
+
+Secrets are declared at build time but injected after the VM boots and
+has been measured. They never affect the TDX measurement.
+
+```python
+# Declare secrets (not baked into the image)
+image.secret("JWT_SECRET", dest="/etc/nethermind/jwt.hex", owner="nethermind")
+image.secret("TLS_CERT", dest="/etc/ssl/certs/app.pem")
+
+# Configure how secrets are delivered after boot
+image.secret_delivery("vsock")  # or "ssh", or "script"
 ```
 
 ### Services — full systemd control

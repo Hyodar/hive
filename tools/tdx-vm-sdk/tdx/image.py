@@ -86,6 +86,53 @@ class RunCommand:
     phase: str = "postinst"
 
 
+@dataclass
+class UserEntry:
+    """A system user to be created in the image."""
+    name: str
+    system: bool = True
+    home: str | None = None
+    shell: str = "/usr/sbin/nologin"
+    groups: list[str] = field(default_factory=list)
+    uid: int | None = None
+
+    def to_commands(self) -> list[str]:
+        """Generate shell commands to create this user."""
+        parts = ["useradd"]
+        if self.system:
+            parts.append("-r")
+        if self.home:
+            parts.extend(["-m", "-d", self.home])
+        parts.extend(["-s", self.shell])
+        if self.uid is not None:
+            parts.extend(["-u", str(self.uid)])
+        if self.groups:
+            parts.extend(["-G", ",".join(self.groups)])
+        parts.append(self.name)
+
+        cmd = " ".join(parts)
+        cmds = [f"id -u {self.name} &>/dev/null || {cmd}"]
+        if self.home:
+            cmds.append(f"mkdir -p {self.home}")
+            cmds.append(f"chown {self.name}:{self.name} {self.home}")
+        return cmds
+
+
+@dataclass
+class SecretEntry:
+    """A secret declared for post-measurement injection.
+
+    Secrets are NOT baked into the image. They are declared at build time
+    so the image can set up the expected file paths and permissions, then
+    injected after the VM boots and has been measured.
+    """
+    name: str
+    description: str = ""
+    dest: str = ""
+    owner: str = "root"
+    mode: str = "0400"
+
+
 class Profile:
     """Captures configuration overrides for a named profile (dev, azure, etc.)."""
 
@@ -146,6 +193,10 @@ class Image:
         self._templates: list[TemplateEntry] = []
         self._skeleton: list[SkeletonEntry] = []
         self._run_commands: list[RunCommand] = []
+        self._users: list[UserEntry] = []
+        self._secrets: list[SecretEntry] = []
+        self._secret_delivery: str = "ssh"
+        self._secret_delivery_config: dict[str, str] = {}
         self._profiles: dict[str, Profile] = {}
         self._active_profile: Profile | None = None
 
@@ -207,6 +258,82 @@ class Image:
             target.packages.extend(packages)
         else:
             self._packages.extend(packages)
+
+    # --- Users ---
+
+    def user(
+        self,
+        name: str,
+        system: bool = True,
+        home: str | None = None,
+        shell: str = "/usr/sbin/nologin",
+        groups: list[str] | None = None,
+        uid: int | None = None,
+    ) -> None:
+        """Create a system user in the image.
+
+        Args:
+            name: Username.
+            system: Create as a system user (low UID range).
+            home: Home directory (created and owned if specified).
+            shell: Login shell.
+            groups: Additional groups to add the user to.
+            uid: Explicit UID (useful for reproducibility across rebuilds).
+        """
+        self._users.append(UserEntry(
+            name=name,
+            system=system,
+            home=home,
+            shell=shell,
+            groups=groups or [],
+            uid=uid,
+        ))
+
+    # --- Secrets ---
+
+    def secret(
+        self,
+        name: str,
+        description: str = "",
+        dest: str = "",
+        owner: str = "root",
+        mode: str = "0400",
+    ) -> None:
+        """Declare a secret for post-measurement injection.
+
+        Secrets are NOT baked into the image. They are declared at build
+        time so the image can set up expected paths and permissions, then
+        injected after the VM boots and has been measured.
+
+        Args:
+            name: Secret identifier (e.g., "API_KEY", "TLS_CERT").
+            description: Human-readable description.
+            dest: Filesystem path where the secret will be placed at runtime.
+            owner: File owner for the secret file.
+            mode: File permissions (octal string, e.g., "0400").
+        """
+        self._secrets.append(SecretEntry(
+            name=name,
+            description=description,
+            dest=dest,
+            owner=owner,
+            mode=mode,
+        ))
+
+    def secret_delivery(
+        self,
+        method: str = "ssh",
+        **config: str,
+    ) -> None:
+        """Configure how secrets are delivered to the VM after measurement.
+
+        Args:
+            method: Delivery mechanism — "ssh", "vsock", or "script".
+            **config: Method-specific configuration.
+                For "script": fetch_script="./scripts/fetch-secrets.sh"
+        """
+        self._secret_delivery = method
+        self._secret_delivery_config = config
 
     # --- Builds ---
 
@@ -427,6 +554,10 @@ class Image:
             templates=list(self._templates),
             skeleton=list(self._skeleton),
             run_commands=list(self._run_commands),
+            users=list(self._users),
+            secrets=list(self._secrets),
+            secret_delivery=self._secret_delivery,
+            secret_delivery_config=dict(self._secret_delivery_config),
         )
 
         if profile and profile in self._profiles:
@@ -467,3 +598,7 @@ class ResolvedImage:
     templates: list[TemplateEntry]
     skeleton: list[SkeletonEntry]
     run_commands: list[RunCommand]
+    users: list[UserEntry]
+    secrets: list[SecretEntry]
+    secret_delivery: str
+    secret_delivery_config: dict[str, str]
