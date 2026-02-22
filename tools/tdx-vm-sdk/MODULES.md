@@ -1124,10 +1124,13 @@ with img.profile("dev"):
     img.measure(backend="rtmr")
     img.deploy(target="qemu", memory="4G")
 
-# Batch profile operations
-img.profiles("dev", "prod").bake()           # Bake multiple profiles (single lima-vm execution)
-img.all_profiles().bake()                    # Bake all defined profiles
-img.all_profiles().measure(backend="rtmr")   # Measure all profiles
+# Batch profile operations (context managers, like img.profile())
+with img.profiles("dev", "prod"):
+    img.bake()                                   # Bake selected profiles (single lima-vm execution)
+
+with img.all_profiles():
+    img.bake()                                   # Bake all defined profiles
+    img.measure(backend="rtmr")                  # Measure all profiles
 
 # Lock
 img.lock()                          # Resolve and lock dependencies
@@ -1307,12 +1310,13 @@ with img.profile("dev"):
     img.debloat(enabled=False)
 
 # Bake all profiles in a single lima-vm execution
-results = img.all_profiles().bake()
+with img.all_profiles():
+    img.bake()
 
-# Measure all profiles
-measurements = img.all_profiles().measure(backend="rtmr")
-for name, m in measurements.items():
-    m.to_json(f"build/{name}/measurements.json")
+    # Measure all profiles
+    measurements = img.measure(backend="rtmr")
+    for name, m in measurements.items():
+        m.to_json(f"build/{name}/measurements.json")
 
 # Deploy the dev profile locally
 with img.profile("dev"):
@@ -1406,8 +1410,10 @@ and the shared build cache means common compilation steps run only once.
 
 ### Why `profiles()` and `all_profiles()`?
 
-The `with img.profile("name"):` context manager works well for single-profile
-operations, but batch operations like "bake all profiles" need a different
-API. `img.profiles("dev", "prod").bake()` is clearer than a loop, and it
-enables the SDK to optimize — using a single lima-vm instance and sharing
-the build cache across all profiles in one execution.
+`with img.profile("name"):` scopes operations to a single profile.
+`with img.profiles("dev", "prod"):` and `with img.all_profiles():`
+extend the same pattern to multiple profiles. The `with` block keeps
+the API uniform — operations inside the block target the selected
+profiles. This also enables the SDK to optimize: `bake()` inside a
+multi-profile block uses a single lima-vm instance and shares the
+build cache across all profiles.

@@ -553,16 +553,19 @@ with img.profile("dev"):
     img.bake()
 
 # Bake multiple profiles in a single lima-vm execution
-img.profiles("dev", "azure").bake()
+with img.profiles("dev", "azure"):
+    img.bake()
 
 # Bake all defined profiles
-img.all_profiles().bake()
+with img.all_profiles():
+    img.bake()
 
 # Measure the default profile
 measurements = img.measure(backend="rtmr")
 
 # Measure all profiles
-img.all_profiles().measure(backend="rtmr")
+with img.all_profiles():
+    img.measure(backend="rtmr")
 
 # Measure the azure profile
 with img.profile("azure"):
@@ -578,29 +581,32 @@ with img.profile("dev"):
 
 ### Batch profile operations — `profiles()` and `all_profiles()`
 
-`img.profiles(...)` and `img.all_profiles()` return a `ProfileSet` that
-supports the same operations as a single-profile context (`bake()`,
-`measure()`, `deploy()`), but operates on multiple profiles at once.
+`img.profiles(...)` and `img.all_profiles()` are context managers, just
+like `img.profile("name")`. Operations inside the `with` block apply to
+all selected profiles.
 
 ```python
-# Select specific profiles
-ps = img.profiles("dev", "prod")
+# Bake specific profiles — single lima-vm execution
+with img.profiles("dev", "prod"):
+    img.bake()
+    # returns per-profile results accessible via img.result("dev"), img.result("prod")
 
-# Or all defined profiles
-ps = img.all_profiles()
+# Bake all defined profiles
+with img.all_profiles():
+    img.bake()
 
-# Bake — single lima-vm execution for all profiles
-results = ps.bake()
-# results["dev"].image_path → Path("build/dev/my-vm.raw")
-# results["prod"].image_path → Path("build/prod/my-vm.raw")
+# Measure all profiles
+with img.all_profiles():
+    img.measure(backend="rtmr")
 
-# Measure — one measurement set per profile
-measurements = ps.measure(backend="rtmr")
-# measurements["dev"][0] → RTMR[0] for dev profile
-# measurements["prod"][2] → RTMR[2] for prod profile
+# Deploy all profiles — launches one VM per profile
+with img.all_profiles():
+    img.deploy(target="qemu", memory="4G")
 
-# Deploy — launches one VM per profile
-ps.deploy(target="qemu", memory="4G")
+# Mix operations in one block
+with img.profiles("dev", "prod"):
+    img.bake()
+    img.measure(backend="rtmr")
 ```
 
 **Why `bake()` shares a single lima-vm execution:** Each profile produces
@@ -610,8 +616,9 @@ source, same flags) run once in the shared build cache. Only the
 profile-specific configuration and final image assembly differ. This is
 significantly faster than baking each profile in its own lima-vm instance.
 
-**`deploy()` on a ProfileSet:** Unlike `bake()`, deploy launches separate
-VMs — one per profile. Each profile's image is deployed independently.
+**`deploy()` in a multi-profile block:** Unlike `bake()`, deploy launches
+separate VMs — one per profile. Each profile's image is deployed
+independently.
 
 ### Repositories — custom package sources
 
@@ -664,12 +671,12 @@ with img.profile("dev"):
     result = img.bake()
 
 # Bake multiple profiles (single lima-vm execution)
-results = img.profiles("dev", "prod").bake()
-# results["dev"].image_path → Path("build/dev/my-vm.raw")
-# results["prod"].image_path → Path("build/prod/my-vm.raw")
+with img.profiles("dev", "prod"):
+    img.bake()
 
 # Bake all defined profiles
-results = img.all_profiles().bake()
+with img.all_profiles():
+    img.bake()
 
 # Inspect the generated mkosi configs without baking
 img.emit_mkosi("./out/")
@@ -700,8 +707,8 @@ img.bake()
     +-- 5. Stop lima-vm instance (unless keep_alive=True)
 ```
 
-For batch operations (`img.profiles(...).bake()` or
-`img.all_profiles().bake()`), step 2 happens once. Each profile's mkosi
+For batch operations (`with img.profiles(...): img.bake()` or
+`with img.all_profiles(): img.bake()`), step 2 happens once. Each profile's mkosi
 invocation (step 3) runs sequentially in the same VM, sharing the build
 cache. Common build steps (same compiler, same source, same flags)
 hit the cache and execute only once across all profiles.
