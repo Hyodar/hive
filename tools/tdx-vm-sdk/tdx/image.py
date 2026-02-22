@@ -59,11 +59,31 @@ class TemplateEntry:
 
 
 @dataclass
+class SkeletonEntry:
+    """A file to place in mkosi.skeleton/ (copied BEFORE package manager runs)."""
+    dest: str
+    src: str | None = None
+    content: str | None = None
+
+
+@dataclass
 class RunCommand:
-    """A shell command or script to run during image build or at boot."""
+    """A shell command or script to run at a specific mkosi lifecycle phase.
+
+    Phases map directly to mkosi's script hooks, in execution order:
+
+        sync       → mkosi.sync        Source synchronization before build
+        prepare    → mkosi.prepare     After base packages, before build (pip, npm, etc.)
+        build      → mkosi.build       Compile from source ($DESTDIR for artifacts)
+        postinst   → mkosi.postinst    After artifacts installed, configure image
+        finalize   → mkosi.finalize    Runs on HOST with $BUILDROOT access
+        postoutput → mkosi.postoutput  After image generated (signing, upload)
+        clean      → mkosi.clean       Cleanup on `mkosi clean`
+        boot       → systemd service   Runs at VM boot time (not an mkosi phase)
+    """
     command: str | None = None
     script: str | None = None
-    phase: str = "build"  # "build" or "boot"
+    phase: str = "postinst"
 
 
 class Profile:
@@ -124,6 +144,7 @@ class Image:
         self._services: list[Service] = []
         self._files: list[FileEntry] = []
         self._templates: list[TemplateEntry] = []
+        self._skeleton: list[SkeletonEntry] = []
         self._run_commands: list[RunCommand] = []
         self._profiles: dict[str, Profile] = {}
         self._active_profile: Profile | None = None
@@ -236,25 +257,129 @@ class Image:
     def template(self, src: str, dest: str, vars: dict[str, Any] | None = None) -> None:
         self._templates.append(TemplateEntry(src=src, dest=dest, vars=vars or {}))
 
-    # --- Escape hatches ---
+    # --- Skeleton (files placed BEFORE package manager) ---
+
+    def skeleton(self, dest: str, src: str | None = None, content: str | None = None) -> None:
+        """Add a file to the skeleton tree (copied before package manager runs).
+
+        Use for base filesystem layout: custom apt sources, resolv.conf for
+        build-time DNS, base directory structure, etc.
+        """
+        if src is None and content is None:
+            raise ValueError("skeleton() requires either src= or content=")
+        self._skeleton.append(SkeletonEntry(dest=dest, src=src, content=content))
+
+    # --- mkosi lifecycle: sync ---
+
+    def sync(self, command: str) -> None:
+        """Run commands during the sync phase (source synchronization).
+
+        mkosi.sync runs before anything else. Use for fetching sources,
+        submodules, or other pre-build source preparation.
+        """
+        self._append_run(RunCommand(command=command, phase="sync"))
+
+    def sync_script(self, path: str) -> None:
+        """Run a script file during the sync phase."""
+        self._run_commands.append(RunCommand(script=path, phase="sync"))
+
+    # --- mkosi lifecycle: prepare ---
+
+    def prepare(self, command: str) -> None:
+        """Run commands during the prepare phase (after base packages installed).
+
+        mkosi.prepare runs after the base packages are installed but before
+        the build phase. Use for pip install, npm install, or other package
+        managers that need the base system in place.
+
+        Runs inside the image namespace with network access.
+        """
+        self._append_run(RunCommand(command=command, phase="prepare"))
+
+    def prepare_script(self, path: str) -> None:
+        """Run a script file during the prepare phase."""
+        self._run_commands.append(RunCommand(script=path, phase="prepare"))
+
+    # --- mkosi lifecycle: postinst (the default "run" target) ---
 
     def run(self, command: str) -> None:
-        """Run arbitrary shell commands during image build."""
-        cmd = RunCommand(command=command, phase="build")
+        """Run arbitrary shell commands in the postinst phase.
+
+        mkosi.postinst runs after build artifacts are installed into the
+        image. This is the right place for most image customization:
+        creating users, enabling services, debloating, hardening, etc.
+
+        Runs inside the image namespace.
+        """
+        self._append_run(RunCommand(command=command, phase="postinst"))
+
+    def run_script(self, path: str) -> None:
+        """Run a script file in the postinst phase."""
+        self._run_commands.append(RunCommand(script=path, phase="postinst"))
+
+    # --- mkosi lifecycle: finalize ---
+
+    def finalize(self, command: str) -> None:
+        """Run commands during the finalize phase (runs on HOST).
+
+        mkosi.finalize runs on the host system (not inside the image)
+        after postinst. It has access to $BUILDROOT pointing to the image
+        root. Use for host-side operations like foreign architecture builds
+        or operations that need host tools not available in the image.
+        """
+        self._append_run(RunCommand(command=command, phase="finalize"))
+
+    def finalize_script(self, path: str) -> None:
+        """Run a script file during the finalize phase."""
+        self._run_commands.append(RunCommand(script=path, phase="finalize"))
+
+    # --- mkosi lifecycle: postoutput ---
+
+    def postoutput(self, command: str) -> None:
+        """Run commands after the image has been generated.
+
+        mkosi.postoutput runs on the host after the final disk image is
+        written. Use for signing images, computing measurements, uploading
+        artifacts, generating checksums, etc.
+        """
+        self._append_run(RunCommand(command=command, phase="postoutput"))
+
+    def postoutput_script(self, path: str) -> None:
+        """Run a script file during the postoutput phase."""
+        self._run_commands.append(RunCommand(script=path, phase="postoutput"))
+
+    # --- mkosi lifecycle: clean ---
+
+    def clean(self, command: str) -> None:
+        """Run commands during the clean phase.
+
+        mkosi.clean runs when `mkosi clean` is invoked. Use for cleaning
+        up extra build outputs that mkosi doesn't know about.
+        """
+        self._append_run(RunCommand(command=command, phase="clean"))
+
+    def clean_script(self, path: str) -> None:
+        """Run a script file during the clean phase."""
+        self._run_commands.append(RunCommand(script=path, phase="clean"))
+
+    # --- Boot-time commands (not an mkosi phase) ---
+
+    def on_boot(self, command: str) -> None:
+        """Run commands at VM boot time (generated as a systemd oneshot service).
+
+        This is NOT an mkosi build phase. These commands run when the VM
+        actually boots — use for disk encryption setup, key fetching,
+        attestation initialization, etc.
+        """
+        self._run_commands.append(RunCommand(command=command, phase="boot"))
+
+    def _append_run(self, cmd: RunCommand) -> None:
+        """Append a run command, respecting active profile."""
         target = self._active_profile or self
         if isinstance(target, Profile):
             target.run_commands.append(cmd)
         else:
             self._run_commands.append(cmd)
-
-    def run_script(self, path: str) -> None:
-        """Run a script file during image build."""
-        cmd = RunCommand(script=path, phase="build")
-        self._run_commands.append(cmd)
-
-    def on_boot(self, command: str) -> None:
-        """Run commands at VM boot time (init/initrd phase)."""
-        self._run_commands.append(RunCommand(command=command, phase="boot"))
 
     # --- Profiles ---
 
@@ -300,6 +425,7 @@ class Image:
             services=list(self._services),
             files=list(self._files),
             templates=list(self._templates),
+            skeleton=list(self._skeleton),
             run_commands=list(self._run_commands),
         )
 
@@ -339,4 +465,5 @@ class ResolvedImage:
     services: list[Service]
     files: list[FileEntry]
     templates: list[TemplateEntry]
+    skeleton: list[SkeletonEntry]
     run_commands: list[RunCommand]

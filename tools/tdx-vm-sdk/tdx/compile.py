@@ -1,13 +1,41 @@
-"""Compile a resolved Image into mkosi configs, scripts, and file trees."""
+"""Compile a resolved Image into mkosi configs, scripts, and file trees.
+
+Maps the Python DSL to mkosi's full lifecycle:
+
+    mkosi.conf           Main configuration
+    mkosi.skeleton/      Files copied BEFORE package manager
+    mkosi.sync           Source synchronization scripts
+    mkosi.prepare        After base packages, before build (pip, npm, etc.)
+    mkosi.build.d/       Build scripts ($DESTDIR for artifacts)
+    mkosi.extra/         Files copied AFTER build scripts
+    mkosi.postinst       After artifacts installed, configure image
+    mkosi.finalize       Runs on HOST with $BUILDROOT access
+    mkosi.postoutput     After image generated (signing, upload)
+    mkosi.clean          Cleanup on `mkosi clean`
+    mkosi.repart/        systemd-repart partition definitions
+"""
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 from typing import Any
 
-from tdx.image import FileEntry, ResolvedImage, RunCommand, TemplateEntry
+from tdx.image import FileEntry, ResolvedImage, RunCommand, SkeletonEntry, TemplateEntry
+
+
+# All mkosi script phases in execution order (excluding "boot" which is not mkosi).
+_MKOSI_PHASES = ("sync", "prepare", "postinst", "finalize", "postoutput", "clean")
+
+# Map our phase names to mkosi script file names.
+_PHASE_TO_MKOSI = {
+    "sync": "mkosi.sync",
+    "prepare": "mkosi.prepare",
+    "postinst": "mkosi.postinst",
+    "finalize": "mkosi.finalize",
+    "postoutput": "mkosi.postoutput",
+    "clean": "mkosi.clean",
+}
 
 
 class MkosiCompiler:
@@ -28,11 +56,13 @@ class MkosiCompiler:
 
         self._write_mkosi_conf()
         self._write_kernel_config()
+        self._write_repart_configs()
+        self._write_skeleton()
         self._write_build_scripts()
         self._write_service_units()
         self._write_files()
         self._write_templates()
-        self._write_postinst()
+        self._write_lifecycle_scripts()
         self._write_boot_scripts()
 
     def _write_mkosi_conf(self) -> None:
@@ -66,11 +96,16 @@ class MkosiCompiler:
             content["Locale"] = "C.UTF-8"
         else:
             content["Locale"] = r.locale
+
+        # Build packages: collect build_deps from all builds
+        build_deps: list[str] = []
+        for b in r.builds:
+            build_deps.extend(b.build_deps)
+        if build_deps:
+            content["BuildPackages"] = "\n    ".join(sorted(set(build_deps)))
+
         if content:
             sections["Content"] = content
-
-        # [Partitions] — generate repart configs separately
-        # mkosi uses systemd-repart configs in mkosi.repart/
 
         # [Validation]
         sections["Validation"] = {
@@ -99,7 +134,64 @@ class MkosiCompiler:
             self.resolved.kernel.cmdline + "\n"
         )
 
+    def _write_repart_configs(self) -> None:
+        """Generate systemd-repart partition definitions in mkosi.repart/."""
+        if not self.resolved.partitions:
+            return
+
+        repart_dir = self.output / "mkosi.repart"
+        repart_dir.mkdir(exist_ok=True)
+
+        for i, part in enumerate(self.resolved.partitions):
+            # Determine partition type UUID based on mountpoint
+            type_uuid = _partition_type(part.mountpoint)
+
+            lines = ["[Partition]"]
+            lines.append(f"Type={type_uuid}")
+            lines.append(f"Format={part.fs}")
+            lines.append(f"SizeMinBytes={part.size}")
+            lines.append(f"SizeMaxBytes={part.size}")
+
+            if part.mountpoint != "/":
+                # systemd-repart uses MountPoint= for non-root partitions
+                lines.append(f"MountPoint={part.mountpoint}")
+
+            if part.readonly:
+                lines.append("ReadOnly=yes")
+
+            # Encryption via LUKS
+            if self.resolved.encryption and part.mountpoint == "/":
+                lines.append(f"Encrypt={self.resolved.encryption.type}")
+
+            lines.append("")
+
+            # Name files with ordering prefix and a label
+            label = part.mountpoint.strip("/").replace("/", "-") or "root"
+            config_path = repart_dir / f"{i:02d}-{label}.conf"
+            config_path.write_text("\n".join(lines))
+
+    def _write_skeleton(self) -> None:
+        """Write mkosi.skeleton/ tree (files placed BEFORE package manager)."""
+        if not self.resolved.skeleton:
+            return
+
+        skeleton_dir = self.output / "mkosi.skeleton"
+
+        for entry in self.resolved.skeleton:
+            dest = skeleton_dir / entry.dest.lstrip("/")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            if entry.content is not None:
+                dest.write_text(entry.content)
+            elif entry.src is not None:
+                shutil.copy2(entry.src, dest)
+
     def _write_build_scripts(self) -> None:
+        """Write BuildArtifact declarations as mkosi.build.d/ scripts.
+
+        These run in the build overlay with $DESTDIR available. Build
+        packages are installed in the overlay and stripped from the final image.
+        """
         if not self.resolved.builds:
             return
 
@@ -150,39 +242,53 @@ class MkosiCompiler:
             rendered = _render_template(src_content, tmpl.vars)
             dest.write_text(rendered)
 
-    def _write_postinst(self) -> None:
-        """Write build-time run() commands as mkosi.postinst scripts."""
-        build_commands = [
-            cmd for cmd in self.resolved.run_commands if cmd.phase == "build"
-        ]
-        if not build_commands and not self.resolved.services:
-            return
+    def _write_lifecycle_scripts(self) -> None:
+        """Generate mkosi scripts for each lifecycle phase.
 
-        parts = ["#!/bin/bash", "set -euo pipefail", ""]
+        Each phase gets its own script file. postinst additionally gets
+        service setup commands (user creation, systemctl enable).
+        """
+        for phase in _MKOSI_PHASES:
+            commands = [
+                cmd for cmd in self.resolved.run_commands if cmd.phase == phase
+            ]
 
-        # Service user creation and enable commands
-        for svc in self.resolved.services:
-            for cmd in svc.setup_commands():
-                parts.append(cmd)
+            # postinst gets extra preamble for services
+            has_service_setup = (phase == "postinst" and self.resolved.services)
 
-        # Default target
-        parts.append(f"systemctl set-default {self.resolved.default_target}")
-        parts.append("")
+            if not commands and not has_service_setup:
+                continue
 
-        # Build-time run commands
-        for cmd in build_commands:
-            if cmd.command:
-                parts.append(cmd.command)
-            elif cmd.script:
-                parts.append(f"bash {cmd.script!r}")
-            parts.append("")
+            parts = ["#!/bin/bash", "set -euo pipefail", ""]
 
-        postinst = self.output / "mkosi.postinst"
-        postinst.write_text("\n".join(parts))
-        postinst.chmod(0o755)
+            # postinst preamble: service user creation and enable
+            if phase == "postinst":
+                for svc in self.resolved.services:
+                    for cmd in svc.setup_commands():
+                        parts.append(cmd)
+
+                parts.append(f"systemctl set-default {self.resolved.default_target}")
+                parts.append("")
+
+            # User commands/scripts for this phase
+            for cmd in commands:
+                if cmd.command:
+                    parts.append(cmd.command)
+                elif cmd.script:
+                    parts.append(f"bash {cmd.script!r}")
+                parts.append("")
+
+            mkosi_file = _PHASE_TO_MKOSI[phase]
+            script_path = self.output / mkosi_file
+            script_path.write_text("\n".join(parts))
+            script_path.chmod(0o755)
 
     def _write_boot_scripts(self) -> None:
-        """Write on_boot() commands as init scripts."""
+        """Write on_boot() commands as a systemd oneshot service.
+
+        Boot-time commands are NOT an mkosi phase — they run when the
+        actual VM boots, not during image build.
+        """
         boot_commands = [
             cmd for cmd in self.resolved.run_commands if cmd.phase == "boot"
         ]
@@ -226,6 +332,24 @@ class MkosiCompiler:
             "WantedBy=sysinit.target\n"
         )
         (units_dir / "tdx-boot-init.service").write_text(unit)
+
+
+def _partition_type(mountpoint: str) -> str:
+    """Map mountpoint to GPT partition type UUID.
+
+    Uses well-known systemd discoverable partition type UUIDs.
+    """
+    types = {
+        "/": "root",
+        "/home": "home",
+        "/srv": "srv",
+        "/var": "var",
+        "/tmp": "tmp",
+        "swap": "swap",
+        "/boot": "xbootldr",
+        "/boot/efi": "esp",
+    }
+    return types.get(mountpoint, "linux-generic")
 
 
 def _render_template(template: str, vars: dict[str, Any]) -> str:

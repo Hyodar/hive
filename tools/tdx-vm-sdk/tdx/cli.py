@@ -108,12 +108,19 @@ def cmd_inspect(args: argparse.Namespace) -> None:
     print(f"Init: {resolved.init}")
     print(f"Target: {resolved.default_target}")
     print(f"Firmware: {resolved.firmware}")
+    print(f"Partitions: {[f'{p.mountpoint} ({p.fs}, {p.size})' for p in resolved.partitions]}")
     print(f"Packages: {resolved.packages}")
     print(f"Builds: {[b.name for b in resolved.builds]}")
     print(f"Services: {[s.name for s in resolved.services]}")
+    print(f"Skeleton: {[s.dest for s in resolved.skeleton]}")
     print(f"Files: {[f.dest for f in resolved.files]}")
     print(f"Templates: {[t.dest for t in resolved.templates]}")
-    print(f"Run commands: {len(resolved.run_commands)} ({sum(1 for c in resolved.run_commands if c.phase == 'build')} build, {sum(1 for c in resolved.run_commands if c.phase == 'boot')} boot)")
+
+    # Count commands per phase
+    from collections import Counter
+    phase_counts = Counter(c.phase for c in resolved.run_commands)
+    phases_str = ", ".join(f"{count} {phase}" for phase, count in sorted(phase_counts.items()))
+    print(f"Lifecycle commands: {len(resolved.run_commands)} ({phases_str})")
 
 
 def main() -> None:
