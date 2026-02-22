@@ -274,14 +274,11 @@ def apply(image: Image, strict: bool = True):
     image.install("iptables")
     image.file("/etc/sysctl.d/99-tdx-hardening.conf", src=_data("sysctl.conf"))
 
-    # Debloat with defaults (or strict mode for extra stripping)
+    # Whitelist-based debloat (finalize phase, operates on $BUILDROOT)
     if strict:
-        image.debloat()  # full TDX default: remove getty, homed, docs, caches, etc.
+        image.debloat()  # full TDX default: whitelist systemd, strip paths
     else:
-        image.debloat(
-            systemd_remove=["getty*", "serial-getty*"],  # minimal
-            strip_binaries=False,
-        )
+        image.debloat(systemd_minimize=False)  # path stripping only
 
     image.run("sysctl --system")
 ```
@@ -523,7 +520,6 @@ systemctl enable nm-holesky.service
 systemctl set-default multi-user.target
 
 # 6. User image.run() commands
-rm -rf /usr/lib/systemd/system/getty*
 sysctl --system
 ```
 
@@ -1255,7 +1251,7 @@ from tdx import Image
 def apply(image: Image, strict: bool = True):
     image.install("iptables")
     image.file("/etc/sysctl.d/99-tdx.conf", src=str(files("tdx_hardening").joinpath("data", "sysctl.conf")))
-    image.debloat() if strict else image.debloat(systemd_remove=["getty*", "serial-getty*"])
+    image.debloat() if strict else image.debloat(systemd_minimize=False)
     image.run("sysctl --system")
 ```
 

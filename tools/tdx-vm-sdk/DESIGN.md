@@ -115,7 +115,6 @@ tdx build
     +-- generates systemd .service units (from image.service() calls)
     +-- generates boot-time oneshot service (from image.on_boot() calls)
     +-- invokes mkosi (actual image build)
-    +-- computes measurements (for attestation)
 ```
 
 ## API Surface
@@ -268,79 +267,122 @@ image.service(
 ### Debloat — image stripping and hardening
 
 TDX images should be minimal. The SDK provides a declarative debloat
-API with a sensible default that matches the nethermind-tdx reference.
+API with defaults matching nethermind-tdx's `debloat.sh` and
+`debloat-systemd.sh`.
+
+The debloat has two parts, mirroring the nethermind-tdx approach:
+
+1. **Path stripping** — removes docs, caches, locales, unnecessary
+   systemd data, and other paths from `$BUILDROOT`. Runs in the
+   **finalize** phase (host-side, with `$BUILDROOT` access).
+
+2. **Systemd minimization** — whitelist-based. Only essential units
+   and binaries are kept; everything else is masked (symlinked to
+   `/dev/null`). Also runs in **finalize**.
 
 ```python
-# Apply the default TDX debloat (equivalent to nethermind-tdx's debloat-systemd.sh
-# plus standard image stripping). This is the recommended starting point.
+# Apply the default TDX debloat. This is the recommended starting point.
 image.debloat()
 
-# Equivalent to:
+# The default is equivalent to:
 image.debloat(
-    # Systemd services to remove (glob patterns)
-    systemd_remove=[
-        "getty*",
-        "serial-getty*",
-        "systemd-homed*",
-        "systemd-userdbd*",
-        "systemd-firstboot*",
-        "systemd-resolved*",
-        "systemd-networkd-wait-online*",
-        "systemd-timesyncd*",
-    ],
-    # Additional paths to remove
+    # Paths to remove from $BUILDROOT (matches nethermind-tdx debloat.sh)
     paths_remove=[
-        "/usr/share/doc/*",
-        "/usr/share/info/*",
-        "/usr/share/man/*",
-        "/usr/share/lintian/*",
-        "/var/cache/apt/*",
-        "/var/lib/apt/lists/*",
+        "/etc/machine-id",
+        "/etc/*-",
+        "/etc/ssh/ssh_host_*_key*",
+        "/usr/share/doc",
+        "/usr/share/man",
+        "/usr/share/info",
+        "/usr/share/locale",
+        "/usr/share/gcc",
+        "/usr/share/gdb",
+        "/usr/share/lintian",
+        "/usr/share/perl5/debconf",
+        "/usr/share/debconf",
+        "/usr/share/initramfs-tools",
+        "/usr/share/polkit-1",
+        "/usr/share/bug",
+        "/usr/share/menu",
+        "/usr/share/systemd",
+        "/usr/share/zsh",
+        "/usr/share/mime",
+        "/usr/share/bash-completion",
+        "/usr/lib/modules",
+        "/usr/lib/udev/hwdb.d",
+        "/usr/lib/udev/hwdb.bin",
+        "/usr/lib/systemd/catalog",
+        "/usr/lib/systemd/user",
+        "/usr/lib/systemd/user-generators",
+        "/usr/lib/systemd/network",
+        "/usr/lib/pcrlock.d",
+        "/usr/lib/tmpfiles.d",
+        "/etc/systemd/network",
+        "/etc/credstore",
     ],
-    # Strip ELF binaries
-    strip_binaries=True,
-    # Remove shell profiles (no interactive login on TDX VMs)
-    shells=False,
-)
+    # Also: /var/log/* and /var/cache/* files are deleted (dirs kept)
 
-# Customize: keep resolved and timesyncd, but remove everything else
-image.debloat(
-    systemd_keep=["systemd-resolved*", "systemd-timesyncd*"],
-)
-
-# Minimal debloat: only strip docs and caches, keep all services
-image.debloat(
-    systemd_remove=[],
-    strip_binaries=False,
-)
-
-# Add extra removals on top of the default
-image.debloat(
-    systemd_remove_extra=["systemd-journald*"],
-    paths_remove_extra=["/usr/share/zsh/"],
+    # Whitelist-based systemd minimization (matches nethermind-tdx debloat-systemd.sh).
+    # Only these units are kept; everything else from the systemd package is
+    # masked by symlinking to /dev/null.
+    systemd_units_keep=[
+        "minimal.target",
+        "basic.target",
+        "sysinit.target",
+        "sockets.target",
+        "local-fs.target",
+        "local-fs-pre.target",
+        "network-online.target",
+        "slices.target",
+        "systemd-journald.service",
+        "systemd-journald.socket",
+        "systemd-journald-dev-log.socket",
+        "systemd-remount-fs.service",
+        "systemd-sysctl.service",
+    ],
+    # Only these systemd binaries in /usr/bin are kept; others are removed.
+    systemd_bins_keep=[
+        "systemctl",
+        "journalctl",
+        "systemd",
+        "systemd-tty-ask-password-agent",
+    ],
 )
 ```
 
-The `image.debloat()` method generates `image.run()` commands (postinst
-phase). It always runs *after* package installation and service setup,
-so it won't interfere with apt or systemctl operations.
+Customization:
 
-Default behavior (what `image.debloat()` with no arguments does):
+```python
+# Keep resolved for DNS (add to the whitelist)
+image.debloat(
+    systemd_units_keep_extra=[
+        "systemd-resolved.service",
+        "systemd-resolved.socket",
+    ],
+)
 
-| Category | Action | Rationale |
-|----------|--------|-----------|
-| getty/serial-getty | Remove | No interactive terminals on TDX VMs |
-| systemd-homed | Remove | No home directory management needed |
-| systemd-userdbd | Remove | No user database service needed |
-| systemd-firstboot | Remove | No first-boot wizard on headless VM |
-| systemd-resolved | Remove | Static DNS in TDX images |
-| systemd-timesyncd | Remove | Time comes from host or explicit NTP |
-| /usr/share/doc,man,info | Remove | No humans reading docs inside the VM |
-| apt caches | Remove | Saves space, packages already installed |
-| ELF binaries | Strip debug symbols | Smaller image, faster boot |
-| Shell profiles | Remove | No interactive shells |
+# Keep bash-completion in dev profile (remove from paths_remove)
+with image.profile("dev"):
+    image.debloat(
+        paths_skip=["/usr/share/bash-completion"],
+    )
 
+# No debloat at all (for debugging)
+image.debloat(enabled=False)
+
+# Path stripping only, keep systemd intact
+image.debloat(systemd_minimize=False)
+
+# Add extra paths to remove on top of the default
+image.debloat(
+    paths_remove_extra=["/usr/share/fonts", "/usr/lib/python3"],
+)
 ```
+
+The debloat runs in the **finalize** phase because it operates on
+`$BUILDROOT` from the host side. This means it runs after postinst
+(service enablement, user creation), so `systemctl enable` has already
+recorded the unit symlinks before debloat masks the unused units.
 
 ### Skeleton — files before the package manager
 
@@ -377,8 +419,8 @@ image.sync("git submodule update --init --recursive")
 image.prepare("pip install --root $BUILDROOT pyyaml requests")
 
 # Postinst: runs after build artifacts installed (the default "run" target)
-# Use for enabling services, creating users, debloating
-image.run("rm -rf /usr/lib/systemd/system/getty*")
+# Use for enabling services, creating users, custom configuration
+image.run("sysctl --system")
 image.run_script("./scripts/harden.sh")
 
 # Finalize: runs on HOST with $BUILDROOT access
@@ -447,199 +489,164 @@ Signed-By: /etc/apt/trusted.gpg.d/microsoft.gpg
 
 ### Measurements — pre-launch verification
 
-TDX images are measured by hardware (RTMRs for raw TDX, vTPM PCRs for
-cloud TDX). The SDK computes expected measurements at build time so
-operators can verify them before trusting a VM.
+TDX images are measured by hardware. The SDK computes expected
+measurements at build time so operators can verify them before
+trusting a VM. Two measurement backends match the two TDX
+deployment models:
+
+**Raw TDX** (bare-metal or QEMU) — RTMR-based:
+
+```
+RTMR[0] — firmware (OVMF/TDVF) measurement
+RTMR[1] — OS loader + kernel + initrd + cmdline
+RTMR[2] — OS runtime (rootfs dm-verity hash)
+RTMR[3] — application-defined (unused by default)
+```
+
+**Cloud TDX** (Azure, GCP) — vTPM PCR-based:
+
+```
+PCR[0]  — firmware
+PCR[4]  — boot loader
+PCR[7]  — Secure Boot policy
+PCR[9]  — kernel + initrd
+PCR[11] — unified kernel image hash
+PCR[15] — custom (dm-verity root hash)
+```
+
+The measurement API is Python-first:
 
 ```python
 from tdx import Image
+from tdx.measure import measure, verify, RTMRMeasurement, AzurePCRMeasurement
 
 image = Image("my-vm", base="debian/bookworm")
 # ... full image definition ...
 
-# After building, compute expected measurements:
-# tdx measure TDXfile
-# tdx measure TDXfile --backend azure
-# tdx measure TDXfile --format json > measurements.json
-```
+# After building, compute expected measurements
+result = image.build(output_dir="build")
 
-Two measurement backends, matching the two TDX deployment models:
+# Raw TDX: compute RTMRs
+rtmrs = measure(result, backend="rtmr")
+print(rtmrs[0])  # RTMR[0] firmware hash
+print(rtmrs[2])  # RTMR[2] rootfs dm-verity hash
 
-```python
-# Raw TDX (bare-metal or QEMU): RTMR-based measurement
-# The SDK replays the TDX module's measurement algorithm over the
-# built image to produce expected RTMR values.
-#
-# RTMRs extend in order:
-#   RTMR[0] — firmware (OVMF/TDVF) measurement
-#   RTMR[1] — OS loader + kernel + initrd + cmdline
-#   RTMR[2] — OS runtime (rootfs dm-verity hash)
-#   RTMR[3] — application-defined (unused by default)
+# Azure CVM: compute PCRs
+pcrs = measure(result, backend="azure")
+print(pcrs[11])  # PCR[11] UKI hash
 
-# Cloud TDX (Azure, GCP): vTPM PCR-based measurement
-# Cloud providers wrap TDX in a vTPM. The SDK computes expected
-# PCR values matching the provider's measurement policy.
-#
-# Azure CVM measurement chain:
-#   PCR[0]  — firmware
-#   PCR[4]  — boot loader
-#   PCR[7]  — Secure Boot policy
-#   PCR[9]  — kernel + initrd
-#   PCR[11] — unified kernel image hash
-#   PCR[15] — custom (dm-verity root hash)
-```
-
-CLI usage:
-
-```bash
-# Compute RTMRs for raw TDX deployment
-tdx measure TDXfile
-#   RTMR[0]: a1b2c3d4...
-#   RTMR[1]: e5f6a7b8...
-#   RTMR[2]: c9d0e1f2...
-
-# Compute PCRs for Azure CVM deployment
-tdx measure TDXfile --backend azure
-#   PCR[0]:  1a2b3c4d...
-#   PCR[4]:  5e6f7a8b...
-#   ...
+# Export for CI/CD
+rtmrs.to_json("build/measurements.json")
+rtmrs.to_cbor("build/measurements.cbor")
 
 # Verify a running VM's quote against expected measurements
-tdx verify --quote ./quote.bin --measurements ./measurements.json
-
-# Machine-readable output for CI/CD
-tdx measure TDXfile --format json > measurements.json
-tdx measure TDXfile --format cbor > measurements.cbor
+verify(
+    quote=Path("./quote.bin"),
+    expected=rtmrs,
+)
 ```
 
-### Deployment — build, measure, deploy workflow
+### Deployment
 
-The SDK separates build, measure, and deploy into distinct steps.
-Each step is independently scriptable.
+The SDK provides Python methods for building, measuring, and deploying.
+Users compose these into whatever scripts or pipelines they need.
 
 ```python
-# Project build path — where build artifacts and the final image go.
-# Defaults to ./build/ relative to the TDXfile.
+from tdx import Image
+from tdx.measure import measure
+from tdx.deploy import deploy
+
+image = Image("my-vm", base="debian/bookworm")
+# ... full image definition ...
+
+# Output path — where build artifacts and the final image go.
+# Defaults to ./build/ relative to the working directory.
 image.output_dir = "build"              # default
 image.output_dir = "/mnt/images/my-vm"  # absolute path for CI
 ```
 
-```bash
-# Step 1: Build the image
-tdx build TDXfile --output ./build/
-#   → ./build/my-vm.raw           (disk image)
-#   → ./build/my-vm.vmlinuz       (kernel)
-#   → ./build/my-vm.initrd        (initrd, if applicable)
-#   → ./build/SHA256SUMS           (checksums)
-
-# Step 2: Compute measurements
-tdx measure TDXfile --output ./build/
-#   → ./build/my-vm.measurements.json
-
-# Step 3: Deploy
-tdx deploy TDXfile --target qemu          # local QEMU/KVM
-tdx deploy TDXfile --target azure         # Azure CVM
-tdx deploy TDXfile --target gcp           # GCP Confidential VM
-tdx deploy TDXfile --target ssh://host    # remote bare-metal via SSH
-```
-
-Deployment targets in the TDXfile:
+Build, measure, deploy as separate Python calls:
 
 ```python
+# build.py
+from tdx import Image
+# ... image definition ...
+
+result = image.build()
+# result.image_path  → Path("build/my-vm.raw")
+# result.kernel_path → Path("build/my-vm.vmlinuz")
+# result.output_dir  → Path("build/")
+```
+
+```python
+# measure.py
+from tdx.measure import measure
+import json
+
+result = image.build()  # or load a previous BuildResult
+rtmrs = measure(result, backend="rtmr")
+Path("build/measurements.json").write_text(rtmrs.to_json())
+# Upload to attestation service, store in CI artifacts, etc.
+```
+
+```python
+# deploy.py
+from tdx.deploy import deploy
+
+result = image.build()
+
 # Local QEMU — for development and testing
-image.deploy(
-    target="qemu",
-    memory="4G",
-    cpus=2,
-    vsock_cid=3,
-    # extra_args passed directly to qemu-system-x86_64
-    extra_args=["-nographic"],
-)
+deploy(result, target="qemu", memory="4G", cpus=2, vsock_cid=3)
 
 # Azure Confidential VM
-image.deploy(
-    target="azure",
+deploy(result, target="azure",
     resource_group="my-rg",
     vm_size="Standard_DC4as_v5",
     location="eastus",
-    # Azure-specific: the image is uploaded to a managed disk
 )
 
 # GCP Confidential VM
-image.deploy(
-    target="gcp",
+deploy(result, target="gcp",
     project="my-project",
     zone="us-central1-a",
     machine_type="n2d-standard-4",
 )
 
 # Remote bare-metal via SSH
-image.deploy(
-    target="ssh://root@10.0.0.1",
+deploy(result, target="ssh",
+    host="root@10.0.0.1",
     image_path="/var/lib/vms/my-vm.raw",
 )
 ```
 
-The three steps are designed to be used independently:
+Or all in one script:
 
 ```python
 #!/usr/bin/env python3
-"""build.py — Build the image."""
-import subprocess
-subprocess.run(["tdx", "build", "TDXfile", "--output", "build/"], check=True)
-```
+"""Full pipeline: build → measure → deploy."""
+from tdx import Image, Build, Kernel
+from tdx.measure import measure
+from tdx.deploy import deploy
 
-```python
-#!/usr/bin/env python3
-"""measure.py — Compute and store measurements."""
-import subprocess, json
-result = subprocess.run(
-    ["tdx", "measure", "TDXfile", "--format", "json"],
-    capture_output=True, text=True, check=True,
-)
-measurements = json.loads(result.stdout)
-# Upload to attestation service, store in CI artifacts, etc.
-print(f"RTMR[2] (rootfs): {measurements['rtmr'][2]}")
-```
+image = Image("nethermind-prover", base="debian/bookworm")
+# ... image definition ...
 
-```python
-#!/usr/bin/env python3
-"""deploy.py — Deploy to target environment."""
-import subprocess
-subprocess.run(["tdx", "deploy", "TDXfile", "--target", "qemu"], check=True)
-```
-
-Or all in one:
-
-```bash
-tdx build TDXfile --output build/ && \
-tdx measure TDXfile --output build/ && \
-tdx deploy TDXfile --target qemu
+result = image.build(output_dir="build")
+rtmrs = measure(result)
+rtmrs.to_json("build/measurements.json")
+deploy(result, target="qemu", memory="8G", cpus=4)
 ```
 
 ## CLI
 
+The SDK includes a thin CLI wrapper for convenience. It simply calls the
+Python API — users who need more control call the SDK directly.
+
 ```bash
-# Build
-tdx build TDXfile                        # Build the image (output: ./build/)
-tdx build TDXfile --profile dev          # Build with a profile
-tdx build TDXfile --output /tmp/out/     # Custom output path
+tdx build TDXfile                        # image.build()
+tdx build TDXfile --profile dev          # image.build(profile="dev")
 tdx build TDXfile --emit-mkosi ./out/    # Inspect generated mkosi configs
-tdx build TDXfile --mkosi-override ./o/  # Layer custom mkosi.conf
-
-# Measure
-tdx measure TDXfile                      # RTMRs for raw TDX (default)
-tdx measure TDXfile --backend azure      # PCRs for Azure CVM
-tdx measure TDXfile --format json        # Machine-readable output
-tdx verify --quote q.bin --measurements m.json  # Verify a live VM
-
-# Deploy
-tdx deploy TDXfile --target qemu         # Local QEMU/KVM
-tdx deploy TDXfile --target azure        # Azure Confidential VM
-tdx deploy TDXfile --target ssh://host   # Remote bare-metal
-
-# Inspect
-tdx inspect TDXfile                      # Show resolved config
+tdx inspect TDXfile                      # Show resolved configuration
 ```
 
 ## Generated output structure
