@@ -8,9 +8,9 @@ A Python SDK for building reproducible, measured TDX virtual machine images.
 
 Every VM knob is exposed — kernel config, partitions, init system, firmware,
 encryption, networking. The SDK provides sensible TDX defaults so you can start
-with `Image("my-vm")` and get a working hardened image. But nothing is hidden
-or locked: you can override any default down to raw kernel .config entries or
-custom OVMF firmware paths.
+with `Image(build_dir="build")` and get a working hardened image. But nothing
+is hidden or locked: you can override any default down to raw kernel .config
+entries or custom OVMF firmware paths.
 
 ### 2. Build your own packages reproducibly
 
@@ -31,34 +31,68 @@ The declarative API covers the common cases. For everything else:
 - `image.on_boot("commands")` — run commands at VM boot time
 - `image.skeleton()` — files placed before the package manager runs
 - `image.file()` / `image.template()` — drop arbitrary files into the image
-- `--emit-mkosi` — inspect the generated mkosi configs directly
-- `--mkosi-override` — layer your own mkosi.conf on top
+- `image.emit_mkosi("./out/")` — inspect the generated mkosi configs directly
 
 The SDK is a **compiler from Python DSL to mkosi configs + build scripts**,
 not a black box.
 
+### 4. SDK, not CLI
+
+There is no CLI. Everything is a Python method on `Image`. Users who want a
+CLI can trivially build one from the SDK. The three core operations — build,
+measure, deploy — are all methods on the same `Image` object:
+
+```python
+from tdx import Image
+
+img = Image(build_dir="build")
+# ... configure ...
+img.build()                              # build the image
+img.measure(backend="rtmr")             # compute measurements from build artifacts
+img.deploy(target="qemu", memory="4G")  # deploy the built image
+```
+
+### 5. Profiles scope everything
+
+The `with image.profile("name")` context manager scopes all operations —
+configuration, build, measure, deploy. Outside any profile block, you're
+operating on the default profile (configurable via `Image(default_profile=...)`).
+
+```python
+img = Image(build_dir="build")
+img.install("ca-certificates")          # → default profile
+img.build()                              # → builds default profile
+
+with img.profile("dev"):
+    img.install("strace", "gdb")        # → dev profile only
+    img.build()                          # → builds dev profile only
+    img.deploy(target="qemu")           # → deploys dev profile
+```
+
 ## mkosi Lifecycle Mapping
 
-The SDK maps directly to mkosi's build phases. Every phase is exposed:
+The SDK maps directly to mkosi's build phases. Every phase is exposed.
+When you call `image.build()`, the SDK generates mkosi configs and
+invokes mkosi:
 
 ```
-TDXfile (Python)
+image.build()
     |
-    v
-tdx build
+    +-- generates mkosi.conf      ◄──────────  Image(), Kernel(), install()
     |                                           mkosi phase
     +-- image.skeleton()         ──────────►  mkosi.skeleton/
     +-- image.sync()             ──────────►  mkosi.sync
     +-- image.prepare()          ──────────►  mkosi.prepare
-    +-- image.build()            ──────────►  mkosi.build.d/
+    +-- image.add_build()        ──────────►  mkosi.build.d/
     +-- image.file() / template()──────────►  mkosi.extra/
     +-- image.run()              ──────────►  mkosi.postinst
     +-- image.finalize()         ──────────►  mkosi.finalize
+    +-- image.debloat()          ──────────►  mkosi.finalize (appended)
     +-- image.postoutput()       ──────────►  mkosi.postoutput
     +-- image.clean()            ──────────►  mkosi.clean
     +-- image.partitions()       ──────────►  mkosi.repart/
-    +-- mkosi.conf               ◄──────────  Image(), Kernel(), install()
     +-- image.on_boot()          ──────────►  systemd oneshot service
+    +-- invokes mkosi
 ```
 
 ### Phase execution order
@@ -68,7 +102,7 @@ tdx build
 | 1  | skeleton/      | `image.skeleton()`       | (file copy)    | Base filesystem before package manager |
 | 2  | mkosi.sync     | `image.sync()`           | Host           | Source synchronization |
 | 3  | mkosi.prepare  | `image.prepare()`        | Image (nspawn) | pip, npm, etc. after base packages |
-| 4  | mkosi.build.d/ | `image.build()`          | Build overlay  | Compile from source ($DESTDIR) |
+| 4  | mkosi.build.d/ | `image.add_build()`      | Build overlay  | Compile from source ($DESTDIR) |
 | 5  | mkosi.extra/   | `image.file()`           | (file copy)    | Static files into image |
 | 6  | mkosi.postinst | `image.run()`            | Image (nspawn) | Configure image, enable services |
 | 7  | mkosi.finalize | `image.finalize()`       | Host           | Host-side post-processing ($BUILDROOT) |
@@ -93,13 +127,11 @@ tdx build
 ## Architecture
 
 ```
-TDXfile (Python)
+img = Image(build_dir="build")
+# ... configuration calls ...
+img.build()
     |
-    v
-tdx build
-    |
-    +-- parses TDXfile, evaluates Python
-    +-- resolves Build declarations -> build scripts
+    +-- resolves Build declarations → build scripts
     +-- generates mkosi.conf (from Image config)
     +-- generates mkosi.skeleton/ (from image.skeleton() calls)
     +-- generates mkosi.sync (from image.sync() calls)
@@ -107,7 +139,7 @@ tdx build
     +-- generates mkosi.build.d/ (from Build.* declarations)
     +-- generates mkosi.extra/ tree (from image.file/template calls)
     +-- generates mkosi.postinst (from image.run() calls + service setup)
-    +-- generates mkosi.finalize (from image.finalize() calls)
+    +-- generates mkosi.finalize (from image.finalize() + debloat() calls)
     +-- generates mkosi.postoutput (from image.postoutput() calls)
     +-- generates mkosi.clean (from image.clean() calls)
     +-- generates mkosi.repart/ (from image.partitions() calls)
@@ -115,6 +147,18 @@ tdx build
     +-- generates systemd .service units (from image.service() calls)
     +-- generates boot-time oneshot service (from image.on_boot() calls)
     +-- invokes mkosi (actual image build)
+    +-- returns BuildResult
+
+img.measure(backend="rtmr")
+    |
+    +-- reads build artifacts from build_dir
+    +-- replays TDX measurement algorithm over firmware + kernel + rootfs
+    +-- returns Measurements (indexable, serializable)
+
+img.deploy(target="qemu", memory="4G")
+    |
+    +-- reads build artifacts from build_dir
+    +-- launches VM / uploads image to cloud provider
 ```
 
 ## API Surface
@@ -124,43 +168,47 @@ tdx build
 ```python
 from tdx import Image, Kernel
 
-image = Image(
-    name="my-prover",
-    base="debian/bookworm",       # or "ubuntu/noble", "alpine/3.20"
+img = Image(
+    build_dir="build",               # where build artifacts go (default: ./build/)
+    base="debian/bookworm",          # or "ubuntu/noble", "alpine/3.20"
+    default_profile="default",       # name of the default profile
 )
 
 # Kernel — opinionated TDX default, fully overridable
-image.kernel = Kernel.tdx()                              # sensible defaults
-image.kernel = Kernel.tdx(version="6.8", cmdline="...")  # override specific knobs
-image.kernel = Kernel.tdx(config_file="./my.config")     # bring your own
+img.kernel = Kernel.tdx()                              # sensible defaults
+img.kernel = Kernel.tdx(version="6.8", cmdline="...")  # override specific knobs
+img.kernel = Kernel.tdx(config_file="./my.config")     # bring your own
 
 # Full VM knobs
-image.init = "systemd"              # or "busybox", or a custom binary path
-image.default_target = "minimal.target"
-image.firmware = "ovmf"             # or a custom OVMF path
-image.locale = None                 # stripped by default
-image.docs = False                  # no man pages
+img.init = "systemd"              # or "busybox", or a custom binary path
+img.default_target = "minimal.target"
+img.firmware = "ovmf"             # or a custom OVMF path
+img.locale = None                 # stripped by default
+img.docs = False                  # no man pages
 
 # Partitions (generates mkosi.repart/ configs)
-image.partitions(
+img.partitions(
     Image.partition("/", fs="ext4", size="2G"),
     Image.partition("/var", fs="ext4", size="10G"),
 )
 
 # Encryption
-image.encryption(type="luks2", key_source="tpm")
+img.encryption(type="luks2", key_source="tpm")
 
 # Networking
-image.network(
+img.network(
     vsock=True,
     firewall_rules=["ACCEPT tcp 8545", "DROP all"],
 )
 
 # SSH (dev only)
-image.ssh(enabled=True, key_delivery="http")
+img.ssh(enabled=True, key_delivery="http")
 ```
 
-### Build — reproducible package building
+### add_build — reproducible package building
+
+`image.add_build()` registers build steps (compiled from source).
+These run in the mkosi build overlay phase.
 
 Builder modules provide flexible compiler sourcing — use precompiled
 releases, custom tarballs via `fetch()`, or build compilers from source:
@@ -169,7 +217,9 @@ releases, custom tarballs via `fetch()`, or build compilers from source:
 from tdx.builders.go import GoBuild
 from tdx.builders.rust import RustBuild
 from tdx.builders.dotnet import DotnetBuild
-from tdx import Build, fetch
+from tdx import Image, Build, fetch
+
+img = Image(build_dir="build")
 
 # Go: precompiled official release (default)
 prover = GoBuild(
@@ -205,7 +255,7 @@ custom = Build.script(
     build_deps=["cmake", "libfoo-dev"],
 )
 
-image.build(prover, raiko, nethermind, custom)
+img.add_build(prover, raiko, nethermind, custom)
 ```
 
 ### Fetch — verified resource downloads
@@ -445,16 +495,54 @@ image.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
 image.install("prometheus", "dropbear", "iptables")
 ```
 
-### Profiles — same image, different targets
+### Profiles — scope everything
+
+The `with image.profile("name")` context manager scopes all operations.
+Configuration calls inside a profile block only apply to that profile.
+Build, measure, and deploy inside a profile block operate on that profile.
+
+Outside any profile block, you operate on the default profile (name
+configurable via `Image(default_profile="...")`).
 
 ```python
-with image.profile("dev"):
-    image.ssh(enabled=True)
-    image.install("strace", "gdb", "vim")
+img = Image(build_dir="build", base="debian/bookworm")
 
-with image.profile("azure"):
-    image.cloud = "azure"
-    image.attestation_backend = "azure"
+# These apply to the default profile
+img.install("ca-certificates", "iptables")
+img.debloat()
+
+# Dev profile: adds packages, keeps bash-completion
+with img.profile("dev"):
+    img.ssh(enabled=True)
+    img.install("strace", "gdb", "vim")
+    img.debloat(paths_skip=["/usr/share/bash-completion"])
+
+# Azure profile: changes cloud-specific settings
+with img.profile("azure"):
+    img.cloud = "azure"
+    img.secure_boot = True
+    img.attestation_backend = "azure"
+
+# Build the default profile
+img.build()
+
+# Build only the dev profile
+with img.profile("dev"):
+    img.build()
+
+# Measure the default profile
+measurements = img.measure(backend="rtmr")
+
+# Measure the azure profile
+with img.profile("azure"):
+    pcrs = img.measure(backend="azure")
+
+# Deploy the default profile
+img.deploy(target="qemu", memory="4G")
+
+# Deploy the dev profile
+with img.profile("dev"):
+    img.deploy(target="qemu", memory="4G")
 ```
 
 ### Repositories — custom package sources
@@ -487,12 +575,40 @@ Signed-By: /etc/apt/trusted.gpg.d/microsoft.gpg
 )
 ```
 
-### Measurements — pre-launch verification
+### build — execute the image build
 
-TDX images are measured by hardware. The SDK computes expected
-measurements at build time so operators can verify them before
-trusting a VM. Two measurement backends match the two TDX
-deployment models:
+`image.build()` generates mkosi configs from all the configuration
+registered on the image, then invokes mkosi to produce the disk image.
+
+```python
+img = Image(build_dir="build", base="debian/bookworm")
+# ... configuration ...
+
+# Build the (default profile) image
+result = img.build()
+# result.image_path  → Path("build/my-vm.raw")
+# result.kernel_path → Path("build/my-vm.vmlinuz")
+# result.build_dir   → Path("build/")
+
+# Build a specific profile
+with img.profile("dev"):
+    result = img.build()
+
+# Inspect the generated mkosi configs without building
+img.emit_mkosi("./out/")
+```
+
+If `build()` is called without a prior `build()` having been run, it
+builds. If build artifacts already exist in `build_dir`, `measure()` and
+`deploy()` use them directly — they do not require `build()` to be
+called in the same script.
+
+### measure — compute expected measurements
+
+`image.measure()` reads the build artifacts from `build_dir` and computes
+expected hardware measurements. Fails if no build artifacts exist.
+
+Two measurement backends match the two TDX deployment models:
 
 **Raw TDX** (bare-metal or QEMU) — RTMR-based:
 
@@ -514,144 +630,91 @@ PCR[11] — unified kernel image hash
 PCR[15] — custom (dm-verity root hash)
 ```
 
-The measurement API is Python-first:
-
 ```python
-from tdx import Image
-from tdx.measure import measure, verify, RTMRMeasurement, AzurePCRMeasurement
-
-image = Image("my-vm", base="debian/bookworm")
-# ... full image definition ...
-
-# After building, compute expected measurements
-result = image.build(output_dir="build")
+img = Image(build_dir="build", base="debian/bookworm")
+# ... configuration + build ...
 
 # Raw TDX: compute RTMRs
-rtmrs = measure(result, backend="rtmr")
+rtmrs = img.measure(backend="rtmr")
 print(rtmrs[0])  # RTMR[0] firmware hash
 print(rtmrs[2])  # RTMR[2] rootfs dm-verity hash
 
-# Azure CVM: compute PCRs
-pcrs = measure(result, backend="azure")
-print(pcrs[11])  # PCR[11] UKI hash
+# Azure CVM: compute vTPM PCRs
+with img.profile("azure"):
+    pcrs = img.measure(backend="azure")
+    print(pcrs[11])  # PCR[11] UKI hash
 
 # Export for CI/CD
 rtmrs.to_json("build/measurements.json")
 rtmrs.to_cbor("build/measurements.cbor")
 
 # Verify a running VM's quote against expected measurements
-verify(
-    quote=Path("./quote.bin"),
-    expected=rtmrs,
-)
+rtmrs.verify(quote=Path("./quote.bin"))
 ```
 
-### Deployment
+### deploy — launch or upload the image
 
-The SDK provides Python methods for building, measuring, and deploying.
-Users compose these into whatever scripts or pipelines they need.
-
-```python
-from tdx import Image
-from tdx.measure import measure
-from tdx.deploy import deploy
-
-image = Image("my-vm", base="debian/bookworm")
-# ... full image definition ...
-
-# Output path — where build artifacts and the final image go.
-# Defaults to ./build/ relative to the working directory.
-image.output_dir = "build"              # default
-image.output_dir = "/mnt/images/my-vm"  # absolute path for CI
-```
-
-Build, measure, deploy as separate Python calls:
+`image.deploy()` reads build artifacts from `build_dir` and launches a
+VM or uploads the image to a cloud provider. Parameters vary by target.
 
 ```python
-# build.py
-from tdx import Image
-# ... image definition ...
-
-result = image.build()
-# result.image_path  → Path("build/my-vm.raw")
-# result.kernel_path → Path("build/my-vm.vmlinuz")
-# result.output_dir  → Path("build/")
-```
-
-```python
-# measure.py
-from tdx.measure import measure
-import json
-
-result = image.build()  # or load a previous BuildResult
-rtmrs = measure(result, backend="rtmr")
-Path("build/measurements.json").write_text(rtmrs.to_json())
-# Upload to attestation service, store in CI artifacts, etc.
-```
-
-```python
-# deploy.py
-from tdx.deploy import deploy
-
-result = image.build()
+img = Image(build_dir="build", base="debian/bookworm")
+# ... configuration + build ...
 
 # Local QEMU — for development and testing
-deploy(result, target="qemu", memory="4G", cpus=2, vsock_cid=3)
+img.deploy(target="qemu", memory="4G", cpus=2, vsock_cid=3)
 
 # Azure Confidential VM
-deploy(result, target="azure",
+img.deploy(target="azure",
     resource_group="my-rg",
     vm_size="Standard_DC4as_v5",
     location="eastus",
 )
 
 # GCP Confidential VM
-deploy(result, target="gcp",
+img.deploy(target="gcp",
     project="my-project",
     zone="us-central1-a",
     machine_type="n2d-standard-4",
 )
 
 # Remote bare-metal via SSH
-deploy(result, target="ssh",
+img.deploy(target="ssh",
     host="root@10.0.0.1",
     image_path="/var/lib/vms/my-vm.raw",
 )
+
+# Deploy a specific profile
+with img.profile("dev"):
+    img.deploy(target="qemu", memory="4G")
 ```
 
-Or all in one script:
+### Full pipeline example
 
 ```python
 #!/usr/bin/env python3
-"""Full pipeline: build → measure → deploy."""
 from tdx import Image, Build, Kernel
-from tdx.measure import measure
-from tdx.deploy import deploy
 
-image = Image("nethermind-prover", base="debian/bookworm")
-# ... image definition ...
+img = Image(build_dir="build", base="debian/bookworm")
+img.kernel = Kernel.tdx(version="6.8")
+img.install("ca-certificates")
+img.debloat()
+img.add_build(Build.go(
+    name="my-prover", src="./prover/",
+    go_version="1.22", output="/usr/local/bin/my-prover",
+))
+img.service(name="my-prover", exec="/usr/local/bin/my-prover")
 
-result = image.build(output_dir="build")
-rtmrs = measure(result)
+# Build, measure, deploy
+img.build()
+rtmrs = img.measure(backend="rtmr")
 rtmrs.to_json("build/measurements.json")
-deploy(result, target="qemu", memory="8G", cpus=4)
-```
-
-## CLI
-
-The SDK includes a thin CLI wrapper for convenience. It simply calls the
-Python API — users who need more control call the SDK directly.
-
-```bash
-tdx build TDXfile                        # image.build()
-tdx build TDXfile --profile dev          # image.build(profile="dev")
-tdx build TDXfile --emit-mkosi ./out/    # Inspect generated mkosi configs
-tdx inspect TDXfile                      # Show resolved configuration
+img.deploy(target="qemu", memory="4G", cpus=2)
 ```
 
 ## Generated output structure
 
-After `tdx build --emit-mkosi ./out/`:
+After `image.emit_mkosi("./out/")`:
 
 ```
 ./out/

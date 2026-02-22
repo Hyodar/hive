@@ -17,7 +17,7 @@ from **installing** (configure an instance — can happen many times).
 9. [Users & Secrets](#9-users--secrets)
 10. [Module Distribution](#10-module-distribution)
 11. [Lockfile](#11-lockfile)
-12. [CLI Commands](#12-cli-commands)
+12. [SDK Operations](#12-sdk-operations)
 13. [Worked Examples](#13-worked-examples)
 14. [Design Decisions & Rationale](#14-design-decisions--rationale)
 
@@ -100,7 +100,7 @@ from tdx import Image
 from tdx_nethermind import Nethermind
 from tdx_hardening import apply as harden
 
-image = Image("my-node", base="debian/bookworm")
+image = Image(build_dir="build", base="debian/bookworm")
 
 harden(image)
 
@@ -148,7 +148,7 @@ class Nethermind:
         """
         image.install("ca-certificates", "libsnappy1v5")
 
-        image.build(Build.dotnet(
+        image.add_build(Build.dotnet(
             name="nethermind",
             src=".",
             sdk_version="10.0",
@@ -331,7 +331,7 @@ packaging (`package_data` or `importlib.resources`).
 ## 4. mkosi Lifecycle Mapping
 
 The Image object is a **declarative collector** — calls like
-`image.install()`, `image.build()`, and `image.run()` don't execute
+`image.install()`, `image.add_build()`, and `image.run()` don't execute
 immediately. They record what should happen. The SDK compiler then sorts
 everything into the correct mkosi phase. Module authors need to understand
 which phase each method targets, because it determines what's available
@@ -348,10 +348,10 @@ Phase               mkosi artifact          Image methods that target it
 1. sync             mkosi.sync              image.sync()
 2. skeleton         mkosi.skeleton/         image.skeleton()
 3. package install  mkosi.conf [Content]    image.install()          ← Packages=
-                                            image.build(build_deps=) ← BuildPackages=
+                                            image.add_build(build_deps=) ← BuildPackages=
                                             image.repository()       ← Repositories=
 4. prepare          mkosi.prepare           image.prepare()
-5. build            mkosi.build.d/          image.build()
+5. build            mkosi.build.d/          image.add_build()
 6. extra files      mkosi.extra/            image.file(), image.template(), image.service()
 7. postinst         mkosi.postinst          image.user(), image.service(), image.run()
 8. finalize         mkosi.finalize          image.finalize()
@@ -418,7 +418,7 @@ after base packages are installed, before the build phase. Has network
 access. Use for `pip install`, `npm install`, or other package managers
 that need the base system in place.
 
-**build** (`image.build()`) — Each `BuildArtifact` generates a script
+**build** (`image.add_build()`) — Each `BuildArtifact` generates a script
 in `mkosi.build.d/`. Runs in a **build overlay** with:
 - `$DESTDIR` — where artifacts must be placed to reach the final image
 - `$SRCDIR` — mounted source trees
@@ -535,7 +535,7 @@ class Nethermind:
 
         # Phase: build (mkosi.build.d/ script)
         # build_deps → BuildPackages= (overlay only, stripped from final image)
-        image.build(Build.dotnet(
+        image.add_build(Build.dotnet(
             name="nethermind",
             src=".",
             output="/opt/nethermind/",
@@ -565,8 +565,8 @@ These two are equivalent:
 
 ```python
 # Order A                           # Order B
-image.run("echo configured")        image.build(Build.go(...))
-image.build(Build.go(...))          image.install("curl")
+image.run("echo configured")        image.add_build(Build.go(...))
+image.add_build(Build.go(...))          image.install("curl")
 image.install("curl")               image.run("echo configured")
 ```
 
@@ -581,7 +581,7 @@ which module methods to call first.
 
 ### 4.7 Advanced phases for module authors
 
-Most modules only need `image.install()`, `image.build()`, `image.run()`,
+Most modules only need `image.install()`, `image.add_build()`, `image.run()`,
 `image.file()`, `image.template()`, `image.service()`, and `image.user()`.
 The advanced lifecycle methods (`sync`, `prepare`, `finalize`,
 `postoutput`, `on_boot`) are available for modules that need them:
@@ -596,7 +596,7 @@ class SpecialModule:
         image.prepare("pip install meson ninja")
 
         # Compile
-        image.build(Build.script(name="special", src=".", build_script="meson compile"))
+        image.add_build(Build.script(name="special", src=".", build_script="meson compile"))
 
     def install(self, image, *, name="special"):
         image.user(name, system=True)
@@ -631,7 +631,7 @@ Apt packages needed only during compilation. Installed in the build
 overlay, **not** in the final image:
 
 ```python
-image.build(Build.dotnet(
+image.add_build(Build.dotnet(
     name="nethermind",
     src=".",
     output="/opt/nethermind/",
@@ -651,7 +651,7 @@ builder modules (see [Section 7](#7-standard-builder-modules)):
 from tdx.builders.go import GoBuild
 
 # GoBuild handles fetching + verifying Go 1.22
-image.build(GoBuild(
+image.add_build(GoBuild(
     version="1.22.5",
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -685,7 +685,7 @@ class Nethermind:
         runtime = DotnetRuntime(version="10.0")
         runtime.setup(image)  # Idempotent — build cache handles dedup
 
-        image.build(Build.dotnet(...))
+        image.add_build(Build.dotnet(...))
 ```
 
 Since `setup()` is idempotent (see [Section 6](#6-build-cache)), calling
@@ -702,7 +702,7 @@ class MyApp:
         from tdx_libcustom import LibCustom
         LibCustom().setup(image)  # Builds libcustom.so (idempotent)
 
-        image.build(Build.script(
+        image.add_build(Build.script(
             name="my-app",
             src="./app/",
             build_script="make LDFLAGS='-L/usr/local/lib -lcustom'",
@@ -729,7 +729,7 @@ twice — within one image or across images.
 
 ### 6.1 Within one image — deduplication
 
-When `image.build(spec)` is called, the Image computes a cache key from
+When `image.add_build(spec)` is called, the Image computes a cache key from
 the build specification. If the same key has already been registered, the
 call is a no-op:
 
@@ -775,7 +775,7 @@ output. This means:
   → binary compiles once.
 - Change a flag, dependency, or compiler version → different cache key →
   fresh build.
-- `tdx cache clean --builds` clears build artifacts.
+- `clean_cache(builds_only=True)` clears build artifacts.
 
 ### 6.3 Cache invalidation
 
@@ -785,7 +785,7 @@ The cache is conservative — when in doubt, it rebuilds:
 - **Compiler changed**: Different compiler tarball hash → new key.
 - **Flags changed**: Different `ldflags`, `features`, etc. → new key.
 - **Build deps changed**: Different `build_deps` list → new key.
-- **`--no-cache`**: Force rebuild, ignore cache entirely.
+- **`no_cache=True`**: Force rebuild, ignore cache entirely.
 
 ### 6.4 How `image.install()` deduplicates
 
@@ -818,7 +818,7 @@ Each builder supports at least:
 from tdx.builders.go import GoBuild, GoFromSource
 
 # Default: precompiled official release
-image.build(GoBuild(
+image.add_build(GoBuild(
     version="1.22.5",
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -826,14 +826,14 @@ image.build(GoBuild(
 ))
 
 # Custom tarball
-image.build(GoBuild(
+image.add_build(GoBuild(
     compiler=fetch("https://go.dev/dl/go1.22.5.linux-amd64.tar.gz", sha256="904b..."),
     src="./my-app/",
     output="/usr/local/bin/my-app",
 ))
 
 # From source
-image.build(GoBuild(
+image.add_build(GoBuild(
     compiler=GoFromSource(version="1.22.5", bootstrap_version="1.21.0"),
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -845,7 +845,7 @@ image.build(GoBuild(
 ```python
 from tdx.builders.rust import RustBuild
 
-image.build(RustBuild(
+image.add_build(RustBuild(
     toolchain="1.83.0",
     src="./raiko/",
     output="/usr/local/bin/raiko",
@@ -859,7 +859,7 @@ image.build(RustBuild(
 ```python
 from tdx.builders.dotnet import DotnetBuild
 
-image.build(DotnetBuild(
+image.add_build(DotnetBuild(
     sdk_version="10.0",
     src="./nethermind/",
     project="src/Nethermind/Nethermind.Runner",
@@ -873,7 +873,7 @@ image.build(DotnetBuild(
 ```python
 from tdx.builders.c import CBuild
 
-image.build(CBuild(
+image.add_build(CBuild(
     src="./my-tool/",
     build_script="make release STATIC=1",
     artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
@@ -888,7 +888,7 @@ Universal fallback:
 ```python
 from tdx import Build
 
-image.build(Build.script(
+image.add_build(Build.script(
     name="my-tool",
     src="./tools/my-tool/",
     build_script="make release",
@@ -947,9 +947,11 @@ src = fetch_git(
 
 ### 8.4 Hash helper
 
-```bash
-tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-# sha256:904b924d...
+```python
+from tdx import fetch_hash
+
+hash = fetch_hash("https://go.dev/dl/go1.22.5.linux-amd64.tar.gz")
+# "sha256:904b924d..."
 ```
 
 ---
@@ -1076,44 +1078,59 @@ contents). Fetch hashes are `sha256(file_contents)`.
 
 ### 11.3 Commands
 
-| Command | What happens |
-|---------|-------------|
-| `tdx lock` | Resolve all unlocked deps |
-| `tdx lock --update` | Re-resolve everything |
-| `tdx lock --update tdx-nethermind` | Re-resolve one module |
-| `tdx build --frozen` | Fail if lockfile is stale (for CI) |
+| Method | What happens |
+|--------|-------------|
+| `img.lock()` | Resolve all unlocked deps |
+| `img.lock(update=True)` | Re-resolve everything |
+| `img.lock(update="tdx-nethermind")` | Re-resolve one module |
+| `img.build(frozen=True)` | Fail if lockfile is stale (for CI) |
 
 ---
 
-## 12. CLI Commands
+## 12. SDK Operations
 
-```bash
+All operations are methods on `Image`. There is no CLI.
+
+```python
+from tdx import Image
+
+img = Image(build_dir="build", base="debian/bookworm")
+# ... configuration ...
+
 # Build
-tdx build                          # Build the image
-tdx build --frozen                 # CI mode (strict lockfile)
-tdx build --no-cache               # Force rebuild everything
+img.build()                         # Build the image
+img.build(frozen=True)              # CI mode (strict lockfile)
+img.build(no_cache=True)            # Force rebuild everything
+
+# Measure
+rtmrs = img.measure(backend="rtmr")         # Raw TDX measurements
+pcrs = img.measure(backend="azure")          # Azure CVM measurements
+rtmrs.to_json("build/measurements.json")     # Export
+rtmrs.verify(quote=Path("./quote.bin"))      # Verify a running VM
+
+# Deploy
+img.deploy(target="qemu", memory="4G")       # Local QEMU
+img.deploy(target="azure", resource_group="my-rg", vm_size="Standard_DC4as_v5")
+
+# Profile-scoped operations
+with img.profile("dev"):
+    img.build()
+    img.measure(backend="rtmr")
+    img.deploy(target="qemu", memory="4G")
 
 # Lock
-tdx lock                           # Resolve and lock dependencies
-tdx lock --update                  # Update all
-tdx lock --update tdx-nethermind   # Update one
+img.lock()                          # Resolve and lock dependencies
+img.lock(update=True)               # Re-resolve everything
+img.lock(update="tdx-nethermind")   # Re-resolve one module
 
-# Fetch
-tdx fetch --hash <url-or-path>     # Compute hash of a resource
+# Inspect
+img.emit_mkosi("./out/")           # Dump generated mkosi configs
 
-# Cache
-tdx cache clean                    # Clear all caches
-tdx cache clean --builds           # Clear build artifacts only
-tdx cache clean --fetches          # Clear fetch cache only
-
-# Secrets
-tdx secrets push --host <ip> --file ./secrets.env
-tdx secrets push --vsock <cid> --file ./secrets.env
-tdx secrets list                   # Show declared secrets
-
-# Module development
-tdx module hash ./path/            # Compute content hash
-tdx module validate ./path/        # Check module structure
+# Cache management
+from tdx.cache import clean_cache
+clean_cache()                       # Clear all caches
+clean_cache(builds_only=True)       # Clear build artifacts only
+clean_cache(fetches_only=True)      # Clear fetch cache only
 ```
 
 ---
@@ -1129,7 +1146,7 @@ from tdx import Image
 from tdx_nethermind import Nethermind
 from tdx_hardening import apply as harden
 
-image = Image("dual-nethermind", base="debian/bookworm")
+image = Image(build_dir="build", base="debian/bookworm")
 
 harden(image)
 
@@ -1174,7 +1191,7 @@ from tdx_nethermind import Nethermind
 from tdx_lighthouse import Lighthouse
 from tdx_hardening import apply as harden
 
-image = Image("eth-fullnode", base="debian/bookworm")
+image = Image(build_dir="build", base="debian/bookworm")
 
 harden(image)
 
@@ -1197,7 +1214,7 @@ image.secret_delivery("vsock")
 from tdx import Image, fetch_git
 from tdx.builders.go import GoBuild, GoFromSource
 
-image = Image("audited-build", base="debian/bookworm")
+image = Image(build_dir="build", base="debian/bookworm")
 
 go = GoFromSource(
     version="1.22.5",
@@ -1209,7 +1226,7 @@ go = GoFromSource(
     bootstrap_version="1.21.0",
 )
 
-image.build(GoBuild(
+image.add_build(GoBuild(
     compiler=go,
     src="./my-prover/",
     output="/usr/local/bin/my-prover",
@@ -1227,7 +1244,7 @@ from tdx_node_exporter import NodeExporter
 class Monitoring:
     def setup(self, image: Image):
         NodeExporter().setup(image)  # Idempotent dep
-        image.build(Build.go(
+        image.add_build(Build.go(
             name="metrics-agg", version="1.22.5",
             src=".", output="/usr/local/bin/metrics-agg",
         ))

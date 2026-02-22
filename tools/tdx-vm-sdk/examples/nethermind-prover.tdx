@@ -1,4 +1,4 @@
-"""Example TDXfile: Nethermind node + custom prover in a TDX VM.
+"""Example: Nethermind node + custom prover in a TDX VM.
 
 This shows the full range of the SDK:
 - Skeleton files (before package manager)
@@ -10,25 +10,21 @@ This shows the full range of the SDK:
 - Services with systemd escape hatches
 - Boot-time init (runtime, not build-time)
 - Profiles for dev vs production
+- Build, measure, deploy as methods on Image
 """
 
-from tdx import Image, Build, Kernel, env
+from tdx import Image, Build, Kernel
 
 # --- Image definition ---
 
-image = Image(
-    name="nethermind-prover",
+img = Image(
+    build_dir="build",
     base="debian/bookworm",
 )
 
-# --- Output path ---
-# Where the built image and artifacts go. Default: ./build/
-# image.output_dir = "build"
-# image.output_dir = "/mnt/ci-images/nethermind-prover"  # absolute for CI
-
 # --- Kernel: TDX defaults, with one extra knob ---
 
-image.kernel = Kernel.tdx(
+img.kernel = Kernel.tdx(
     version="6.8",
     cmdline="console=hvc0 root=/dev/vda2 ro quiet mitigations=auto,nosmt",
     extra_config={
@@ -38,20 +34,20 @@ image.kernel = Kernel.tdx(
 
 # --- Full VM knobs ---
 
-image.init = "systemd"
-image.default_target = "minimal.target"
-image.firmware = "ovmf"
-image.docs = False
-image.locale = None
+img.init = "systemd"
+img.default_target = "minimal.target"
+img.firmware = "ovmf"
+img.docs = False
+img.locale = None
 
-image.partitions(
+img.partitions(
     Image.partition("/", fs="ext4", size="2G"),
     Image.partition("/var", fs="ext4", size="20G"),
 )
 
-image.encryption(type="luks2", key_source="tpm")
+img.encryption(type="luks2", key_source="tpm")
 
-image.network(
+img.network(
     vsock=True,
     firewall_rules=[
         "ACCEPT tcp 8545",    # JSON-RPC
@@ -63,13 +59,13 @@ image.network(
 # --- Skeleton: files placed BEFORE the package manager runs ---
 # Use for custom apt sources, DNS config for build-time network, base dirs
 
-image.skeleton("/etc/apt/apt.conf.d/99no-recommends",
+img.skeleton("/etc/apt/apt.conf.d/99no-recommends",
     content="APT::Install-Recommends \"false\";\nAPT::Install-Suggests \"false\";\n")
 
 # --- Repositories: custom package sources before install ---
 # Add Microsoft's repo so dotnet-sdk is available via apt
 
-image.repository(
+img.repository(
     url="https://packages.microsoft.com/debian/12/prod",
     suite="bookworm",
     components=["main"],
@@ -78,16 +74,16 @@ image.repository(
 
 # --- System packages ---
 
-image.install("iptables", "busybox", "ca-certificates", "curl")
+img.install("iptables", "busybox", "ca-certificates", "curl")
 
 # --- Sync: source preparation (runs first) ---
 
-image.sync("git submodule update --init --recursive")
+img.sync("git submodule update --init --recursive")
 
 # --- Prepare: after base packages, before build ---
 # Use for pip/npm/cargo-install or other non-distro package managers
 
-image.prepare("pip install --root $BUILDROOT pyyaml")
+img.prepare("pip install --root $BUILDROOT pyyaml")
 
 # --- Build custom packages from source (mkosi.build.d/) ---
 
@@ -129,11 +125,11 @@ monitoring = Build.script(
     build_deps=["cmake", "libssl-dev"],
 )
 
-image.build(nethermind, prover, tdx_init, monitoring)
+img.add_build(nethermind, prover, tdx_init, monitoring)
 
 # --- Services ---
 
-image.service(
+img.service(
     name="nethermind",
     exec="/opt/nethermind/nethermind --config mainnet --datadir /var/lib/nethermind",
     after=["network-online.target", "tdx-boot-init.service"],
@@ -149,7 +145,7 @@ image.service(
     },
 )
 
-image.service(
+img.service(
     name="my-prover",
     exec="/usr/local/bin/my-prover --rpc http://localhost:8545",
     after=["nethermind.service"],
@@ -158,7 +154,7 @@ image.service(
     restart="on-failure",
 )
 
-image.service(
+img.service(
     name="monitoring-agent",
     exec="/usr/local/bin/monitoring-agent --config /etc/monitoring/config.toml",
     after=["network-online.target"],
@@ -167,9 +163,9 @@ image.service(
 
 # --- Files and templates (mkosi.extra/) ---
 
-image.file("/etc/motd", content="Nethermind TDX Prover Node\n")
+img.file("/etc/motd", content="Nethermind TDX Prover Node\n")
 
-image.template(
+img.template(
     src="./configs/nethermind.cfg.j2",
     dest="/etc/nethermind/config.json",
     vars={
@@ -182,19 +178,13 @@ image.template(
 # --- Debloat (finalize phase — runs on host with $BUILDROOT) ---
 # Whitelist-based systemd minimization + path stripping.
 # Default matches nethermind-tdx's debloat.sh + debloat-systemd.sh.
-image.debloat()
-
-# Or customize:
-# image.debloat(
-#     systemd_units_keep_extra=["systemd-resolved.service"],
-#     paths_remove_extra=["/usr/share/fonts"],
-# )
+img.debloat()
 
 # --- Postinst: image customization after artifacts installed ---
-# image.run() maps to mkosi.postinst
+# img.run() maps to mkosi.postinst
 
 # Create users and directories
-image.run("""
+img.run("""
 useradd -r -s /usr/sbin/nologin nethermind
 useradd -r -s /usr/sbin/nologin prover
 mkdir -p /var/lib/nethermind
@@ -202,33 +192,48 @@ chown nethermind:nethermind /var/lib/nethermind
 """)
 
 # Or run a whole script
-image.run_script("./scripts/harden-kernel-params.sh")
+img.run_script("./scripts/harden-kernel-params.sh")
 
 # --- Finalize: runs on HOST with $BUILDROOT access ---
 # Use for host-side operations that need tools not in the image
 
-image.finalize("du -sh $BUILDROOT > /tmp/nethermind-prover-size.txt")
+img.finalize("du -sh $BUILDROOT > /tmp/nethermind-prover-size.txt")
 
 # --- Post-output: after disk image is written ---
 # Use for signing, checksums, measurement computation
 
-image.postoutput("sha256sum $OUTPUTDIR/*.raw > $OUTPUTDIR/SHA256SUMS")
+img.postoutput("sha256sum $OUTPUTDIR/*.raw > $OUTPUTDIR/SHA256SUMS")
 
 # --- Clean: runs on `mkosi clean` ---
 
-image.clean("rm -rf ./build-cache/nethermind ./build-cache/prover")
+img.clean("rm -rf ./build-cache/nethermind ./build-cache/prover")
 
 # --- Boot-time: runs when the VM actually boots (not a build phase) ---
 
-image.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
+img.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
 
 # --- Profiles ---
 
-with image.profile("dev"):
-    image.ssh(enabled=True, key_delivery="http")
-    image.install("strace", "gdb", "vim", "htop", "bash-completion")
+with img.profile("dev"):
+    img.ssh(enabled=True, key_delivery="http")
+    img.install("strace", "gdb", "vim", "htop", "bash-completion")
+    img.debloat(paths_skip=["/usr/share/bash-completion"])
 
-with image.profile("azure"):
-    image.cloud = "azure"
-    image.secure_boot = True
-    image.attestation_backend = "azure"
+with img.profile("azure"):
+    img.cloud = "azure"
+    img.secure_boot = True
+    img.attestation_backend = "azure"
+
+# --- Build, measure, deploy ---
+
+img.build()
+
+rtmrs = img.measure(backend="rtmr")
+rtmrs.to_json("build/measurements.json")
+
+# img.deploy(target="qemu", memory="8G", cpus=4, vsock_cid=3)
+
+# Build and deploy the dev profile:
+# with img.profile("dev"):
+#     img.build()
+#     img.deploy(target="qemu", memory="4G")
