@@ -345,14 +345,15 @@ maps to exactly one phase:
 ```
 Phase               mkosi artifact          Image methods that target it
 ─────────────────── ─────────────────────── ─────────────────────────────────────
-1. skeleton         mkosi.skeleton/         image.skeleton()
-2. package install  mkosi.conf [Content]    image.install()          ← Packages=
+1. sync             mkosi.sync              image.sync()
+2. skeleton         mkosi.skeleton/         image.skeleton()
+3. package install  mkosi.conf [Content]    image.install()          ← Packages=
                                             image.build(build_deps=) ← BuildPackages=
-3. sync             mkosi.sync              image.sync()
+                                            image.repository()       ← Repositories=
 4. prepare          mkosi.prepare           image.prepare()
 5. build            mkosi.build.d/          image.build()
 6. extra files      mkosi.extra/            image.file(), image.template(), image.service()
-7. postinst         mkosi.postinst          image.run(), image.user()
+7. postinst         mkosi.postinst          image.user(), image.service(), image.run()
 8. finalize         mkosi.finalize          image.finalize()
 9. (image written)
 10. postoutput      mkosi.postoutput        image.postoutput()
@@ -363,19 +364,54 @@ VM boot             systemd oneshot         image.on_boot()
 
 ### 4.2 What each phase does
 
+**sync** (`image.sync()`) — Runs on the **host** before any image
+operations. Use for `git submodule update`, fetching source tarballs, etc.
+
 **skeleton** (`image.skeleton()`) — Files placed in the image
 *before* the package manager runs. Use for custom apt sources, base
 `/etc/resolv.conf` for build-time DNS, or directory structure that
 packages expect to exist.
 
+There is no "pre-install script" phase — before packages are installed
+there is no userspace (no shell, no libc). The skeleton is the only
+mechanism to influence what the package manager sees. For apt, this
+means:
+
+```python
+# Add a custom repo so apt can see it during package install
+image.skeleton(
+    "/etc/apt/sources.list.d/custom.list",
+    content="deb [signed-by=/etc/apt/trusted.gpg.d/custom.gpg] https://repo.example.com bookworm main",
+)
+image.skeleton("/etc/apt/trusted.gpg.d/custom.gpg", src="./keys/custom.gpg")
+
+# Now packages from this repo are available to image.install()
+image.install("custom-package")
+```
+
+For common cases, `image.repository()` provides a higher-level API
+that handles both the skeleton file and mkosi's `Repositories=`
+directive:
+
+```python
+image.repository(
+    url="https://repo.example.com",
+    suite="bookworm",
+    components=["main"],
+    keyring="./keys/custom.gpg",
+)
+```
+
 **package install** — mkosi runs the package manager. Two separate
-package lists:
+package lists, installed in different scopes:
+
 - `Packages=` (from `image.install()`) → installed in the **final image**
 - `BuildPackages=` (from `build_deps=`) → installed in a **build overlay**
   that is discarded after the build phase. Never in the final image.
 
-**sync** (`image.sync()`) — Runs on the **host** before anything
-else. Use for `git submodule update`, fetching source tarballs, etc.
+This separation is enforced by mkosi, not by the SDK. Build dependencies
+like `libsnappy-dev` or `cmake` are genuinely absent from the final
+image — the overlay is thrown away after compilation.
 
 **prepare** (`image.prepare()`) — Runs **inside** the image namespace
 after base packages are installed, before the build phase. Has network
@@ -383,8 +419,8 @@ access. Use for `pip install`, `npm install`, or other package managers
 that need the base system in place.
 
 **build** (`image.build()`) — Each `BuildArtifact` generates a script
-in `mkosi.build.d/`. Runs in a build overlay with:
-- `$DESTDIR` — where artifacts should be placed for the final image
+in `mkosi.build.d/`. Runs in a **build overlay** with:
+- `$DESTDIR` — where artifacts must be placed to reach the final image
 - `$SRCDIR` — mounted source trees
 - `BuildPackages` installed (but not in the final image)
 
@@ -396,14 +432,10 @@ files written to `$DESTDIR` survive into the final image.
 which mkosi copies into the image **after** build scripts complete.
 Service unit files go here too (`mkosi.extra/etc/systemd/system/`).
 
-**postinst** (`image.run()`) — Runs **inside** the image namespace
-after build artifacts and extra files are installed. This is where most
-image configuration happens:
-- User creation (from `image.user()` — auto-generated into postinst)
-- Service enablement (`systemctl enable` — auto-generated for each
-  `image.service()`)
-- Secret directory setup (auto-generated for each `image.secret()`)
-- Debloating, hardening, any `image.run()` commands
+**postinst** (`image.run()`, `image.user()`, `image.service()`) — Runs
+**inside** the image namespace after build artifacts and extra files are
+installed. The postinst script is generated in a specific order
+(see [Section 4.4](#44-postinst-ordering)).
 
 **finalize** (`image.finalize()`) — Runs on the **host** (not inside
 the image) with `$BUILDROOT` pointing to the image filesystem. Use for
@@ -435,7 +467,64 @@ A module that calls `image.run("nethermind --version")` works because
 installs the binary. But `image.prepare("/opt/nethermind/nethermind --version")`
 would fail — the binary doesn't exist yet during prepare.
 
-### 4.4 Phase mapping in the Nethermind module
+### 4.4 Postinst ordering
+
+The postinst script is assembled from multiple sources. The compiler
+generates it in this order:
+
+```
+mkosi.postinst script:
+  1. Users from image.user()          ← useradd, mkdir home, chown
+  2. Service users from image.service() ← conditional useradd fallback
+  3. Service enablement               ← systemctl enable
+  4. Secret directory setup           ← mkdir -p for secret destinations
+  5. systemctl set-default            ← default boot target
+  6. image.run() commands             ← in call order
+```
+
+**Users are created before services are enabled.** This means
+`image.user()` always runs before `image.service()` setup commands.
+If a module declares a user via `image.user()` AND references the same
+user in `image.service(user=...)`, the service's fallback user creation
+(`id -u || useradd -r`) is a no-op because the user already exists.
+The `image.user()` version is authoritative — it sets home directory,
+groups, UID, and shell.
+
+**`image.run()` commands always run last in postinst.** This means
+module `image.run()` commands can reference any user, service, or
+secret directory — they're all set up by the time `image.run()`
+commands execute. Between multiple `image.run()` calls, order is
+preserved — first registered, first executed.
+
+Example of the generated postinst for a two-instance Nethermind setup:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 1. Users from image.user()
+id -u nm-mainnet &>/dev/null || useradd -r -m -d /var/lib/nm-mainnet -s /usr/sbin/nologin nm-mainnet
+mkdir -p /var/lib/nm-mainnet
+chown nm-mainnet:nm-mainnet /var/lib/nm-mainnet
+id -u nm-holesky &>/dev/null || useradd -r -m -d /var/lib/nm-holesky -s /usr/sbin/nologin nm-holesky
+mkdir -p /var/lib/nm-holesky
+chown nm-holesky:nm-holesky /var/lib/nm-holesky
+
+# 2-3. Service users (no-op, users exist) + enable
+id -u nm-mainnet &>/dev/null || useradd -r -s /usr/sbin/nologin nm-mainnet
+systemctl enable nm-mainnet.service
+id -u nm-holesky &>/dev/null || useradd -r -s /usr/sbin/nologin nm-holesky
+systemctl enable nm-holesky.service
+
+# 4-5. Secrets + default target
+systemctl set-default multi-user.target
+
+# 6. User image.run() commands
+rm -rf /usr/lib/systemd/system/getty*
+sysctl --system
+```
+
+### 4.5 Phase mapping in the Nethermind module
 
 Here's which phase each call in the Nethermind module targets:
 
@@ -455,22 +544,22 @@ class Nethermind:
         ))
 
     def install(self, image, *, name="nethermind", ...):
-        # Phase: postinst (user creation commands auto-generated)
+        # Phase: postinst step 1 (user creation commands auto-generated)
         image.user(name, system=True, home=datadir)
 
         # Phase: extra files (rendered template → mkosi.extra/)
         image.template(src=_data("nethermind.cfg.j2"), dest=f"/etc/{name}/config.json", ...)
 
         # Phase: extra files (unit file → mkosi.extra/etc/systemd/system/)
-        # Phase: postinst (systemctl enable auto-generated)
-        image.service(name=name, exec="...", ...)
+        # Phase: postinst steps 2-3 (service user fallback + systemctl enable)
+        image.service(name=name, exec="...", user=name)
 ```
 
 Note: `image.service()` spans two phases — the unit file goes to
-`mkosi.extra/` (extra files phase), while `systemctl enable` is
-auto-generated in the postinst script.
+`mkosi.extra/` (extra files phase), while `systemctl enable` and the
+service user fallback are auto-generated in the postinst script.
 
-### 4.5 The Image is a declarative collector
+### 4.6 The Image is a declarative collector
 
 Call order within a module doesn't matter for cross-phase operations.
 These two are equivalent:
@@ -491,7 +580,7 @@ compiler sorts methods into their phases regardless of call order.
 before B. The TDXfile author controls cross-module ordering by choosing
 which module methods to call first.
 
-### 4.6 Advanced phases for module authors
+### 4.7 Advanced phases for module authors
 
 Most modules only need `image.install()`, `image.build()`, `image.run()`,
 `image.file()`, `image.template()`, `image.service()`, and `image.user()`.

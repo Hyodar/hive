@@ -67,6 +67,21 @@ class SkeletonEntry:
 
 
 @dataclass
+class RepositoryEntry:
+    """A custom package repository to add before package installation.
+
+    Generates both the skeleton files (apt sources list + keyring) and the
+    mkosi Repositories= directive so mkosi's own resolver can see the repo.
+    """
+    url: str
+    suite: str = ""
+    components: list[str] = field(default_factory=lambda: ["main"])
+    keyring: str | None = None
+    signed_by: str | None = None
+    types: list[str] = field(default_factory=lambda: ["deb"])
+
+
+@dataclass
 class RunCommand:
     """A shell command or script to run at a specific mkosi lifecycle phase.
 
@@ -192,6 +207,7 @@ class Image:
         self._files: list[FileEntry] = []
         self._templates: list[TemplateEntry] = []
         self._skeleton: list[SkeletonEntry] = []
+        self._repositories: list[RepositoryEntry] = []
         self._run_commands: list[RunCommand] = []
         self._users: list[UserEntry] = []
         self._secrets: list[SecretEntry] = []
@@ -396,6 +412,42 @@ class Image:
             raise ValueError("skeleton() requires either src= or content=")
         self._skeleton.append(SkeletonEntry(dest=dest, src=src, content=content))
 
+    # --- Repositories (custom package sources) ---
+
+    def repository(
+        self,
+        url: str,
+        suite: str = "",
+        components: list[str] | None = None,
+        keyring: str | None = None,
+        signed_by: str | None = None,
+        types: list[str] | None = None,
+    ) -> None:
+        """Add a custom package repository.
+
+        Generates both the apt sources list file (via skeleton, so it's
+        available before package installation) and the mkosi Repositories=
+        directive.
+
+        Args:
+            url: Repository URL (e.g., "https://repo.example.com").
+            suite: Distribution suite (e.g., "bookworm").
+            components: Repository components (default: ["main"]).
+            keyring: Path to a GPG keyring file for signature verification.
+                Placed into /etc/apt/trusted.gpg.d/ via skeleton.
+            signed_by: Alternative to keyring — path within the image to a
+                key file (if you placed it via skeleton() yourself).
+            types: Package types (default: ["deb"]).
+        """
+        self._repositories.append(RepositoryEntry(
+            url=url,
+            suite=suite,
+            components=components or ["main"],
+            keyring=keyring,
+            signed_by=signed_by,
+            types=types or ["deb"],
+        ))
+
     # --- mkosi lifecycle: sync ---
 
     def sync(self, command: str) -> None:
@@ -553,6 +605,7 @@ class Image:
             files=list(self._files),
             templates=list(self._templates),
             skeleton=list(self._skeleton),
+            repositories=list(self._repositories),
             run_commands=list(self._run_commands),
             users=list(self._users),
             secrets=list(self._secrets),
@@ -597,6 +650,7 @@ class ResolvedImage:
     files: list[FileEntry]
     templates: list[TemplateEntry]
     skeleton: list[SkeletonEntry]
+    repositories: list[RepositoryEntry]
     run_commands: list[RunCommand]
     users: list[UserEntry]
     secrets: list[SecretEntry]

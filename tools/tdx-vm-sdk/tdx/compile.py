@@ -21,7 +21,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from tdx.image import FileEntry, ResolvedImage, RunCommand, SecretEntry, SkeletonEntry, TemplateEntry, UserEntry
+from tdx.image import FileEntry, RepositoryEntry, ResolvedImage, RunCommand, SecretEntry, SkeletonEntry, TemplateEntry, UserEntry
 
 
 # All mkosi script phases in execution order (excluding "boot" which is not mkosi).
@@ -57,6 +57,7 @@ class MkosiCompiler:
         self._write_mkosi_conf()
         self._write_kernel_config()
         self._write_repart_configs()
+        self._write_repositories()
         self._write_skeleton()
         self._write_build_scripts()
         self._write_service_units()
@@ -170,6 +171,44 @@ class MkosiCompiler:
             label = part.mountpoint.strip("/").replace("/", "-") or "root"
             config_path = repart_dir / f"{i:02d}-{label}.conf"
             config_path.write_text("\n".join(lines))
+
+    def _write_repositories(self) -> None:
+        """Generate skeleton files and mkosi.conf entries for custom repositories.
+
+        For each repository:
+        - Copies keyring file to mkosi.skeleton/etc/apt/trusted.gpg.d/
+        - Generates apt sources file in mkosi.skeleton/etc/apt/sources.list.d/
+        These go into skeleton so they're available BEFORE the package manager.
+        """
+        if not self.resolved.repositories:
+            return
+
+        skeleton_dir = self.output / "mkosi.skeleton"
+
+        for i, repo in enumerate(self.resolved.repositories):
+            repo_name = f"tdx-repo-{i:02d}"
+
+            # Copy keyring if provided
+            signed_by = repo.signed_by
+            if repo.keyring:
+                keyring_dest = f"/etc/apt/trusted.gpg.d/{repo_name}.gpg"
+                dest = skeleton_dir / keyring_dest.lstrip("/")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(repo.keyring, dest)
+                signed_by = keyring_dest
+
+            # Generate apt sources list entry
+            types = " ".join(repo.types)
+            signed_by_opt = f" signed-by={signed_by}" if signed_by else ""
+            components = " ".join(repo.components)
+            sources_line = f"Types: {types}\nURIs: {repo.url}\nSuites: {repo.suite}\nComponents: {components}"
+            if signed_by_opt:
+                sources_line += f"\nSigned-By: {signed_by}"
+
+            sources_dest = f"/etc/apt/sources.list.d/{repo_name}.sources"
+            dest = skeleton_dir / sources_dest.lstrip("/")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(sources_line + "\n")
 
     def _write_skeleton(self) -> None:
         """Write mkosi.skeleton/ tree (files placed BEFORE package manager)."""
