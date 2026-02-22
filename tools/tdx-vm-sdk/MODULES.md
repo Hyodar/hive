@@ -1,165 +1,274 @@
 # TDX VM SDK — Module System Design
 
-Modules are Python libraries that contribute reusable components to TDX VM
-images. A module can provide build logic, configuration files, services,
-lifecycle hooks, or any combination — it's just Python code that operates on
-an `Image`.
+Modules are Python libraries that provide reusable components for TDX VM
+images. A module separates **building** (compile the binary — happens once)
+from **installing** (configure an instance — can happen many times).
 
 ## Table of Contents
 
 1. [Goals](#1-goals)
 2. [Concepts](#2-concepts)
 3. [Module API](#3-module-api)
-4. [Standard Builder Modules](#4-standard-builder-modules)
-5. [Fetch Utility](#5-fetch-utility)
-6. [Users & Secrets](#6-users--secrets)
-7. [Module Distribution & Dependencies](#7-module-distribution--dependencies)
-8. [Lockfile](#8-lockfile)
-9. [CLI Commands](#9-cli-commands)
-10. [Worked Examples](#10-worked-examples)
-11. [Design Decisions & Rationale](#11-design-decisions--rationale)
+4. [Dependency Declarations](#4-dependency-declarations)
+5. [Build Cache](#5-build-cache)
+6. [Standard Builder Modules](#6-standard-builder-modules)
+7. [Fetch Utility](#7-fetch-utility)
+8. [Users & Secrets](#8-users--secrets)
+9. [Module Distribution](#9-module-distribution)
+10. [Lockfile](#10-lockfile)
+11. [CLI Commands](#11-cli-commands)
+12. [Worked Examples](#12-worked-examples)
+13. [Design Decisions & Rationale](#13-design-decisions--rationale)
 
 ---
 
 ## 1. Goals
 
-**Modules are just Python libraries.** No custom file formats, no new DSLs.
-A module author writes Python code that calls the same `Image` API that
-everyone already uses. If you can write a TDXfile, you can write a module.
+**Modules are Python libraries.** No custom file formats, no DSLs. A
+module author writes Python code that calls the same `Image` API that
+TDXfile authors use. If you can write a TDXfile, you can write a module.
 
-**Building flexibility.** Reproducible builds mean different things to
-different people. Some want a precompiled Go toolchain downloaded from
-go.dev. Others want to build the compiler from source, all the way down.
-The SDK provides standard builder modules for common languages, but they're
-just modules — you can replace them, extend them, or ignore them entirely.
+**Build once, install many.** Building a binary and configuring an instance
+are separate operations. Build the Nethermind binary once; install two
+instances with different networks, data directories, and ports. The build
+cache ensures the same build specification never runs twice — not within
+one image, and not across images.
+
+**Flexible building.** Reproducible builds mean different things to
+different people. Some want a precompiled Go toolchain from go.dev. Others
+want to build the compiler from source, all the way down. The SDK provides
+standard builder modules for common languages, but they're just modules —
+replace them, extend them, or ignore them.
+
+**Explicit dependencies.** A module declares its runtime packages, its
+build-time packages, and its dependencies on other modules. The Image
+collects and deduplicates these across all modules. No implicit installs,
+no hidden fetches.
 
 **Verified fetches.** Any external resource (compiler tarball, firmware
-binary, source archive) is downloaded through a `fetch()` utility that
-requires a content hash. The hash is recorded in the lockfile. No
-unverified downloads in the build.
+binary, source archive) goes through `fetch()` with a mandatory content
+hash. The hash is recorded in the lockfile.
 
-**Users and secrets.** System users are first-class. Secrets (API keys,
-private keys, credentials) are declared in the image definition but
-injected *after* measurement — they never affect the measured image, and
-they never appear in the build output.
-
-**Composability.** An image is built by calling module functions. Modules
-compose naturally through Python: call one module, then another. Conflicts
-are just Python errors — a file written twice, a port claimed twice.
-No magic merge rules.
+**Users and secrets.** System users are first-class. Secrets are declared
+at build time but injected *after* measurement — they never affect the
+measured image.
 
 ---
 
 ## 2. Concepts
 
-### What is a module?
+### Build vs. Install
 
-A module is a Python package that exports functions (or classes) which
-operate on an `Image`. That's it. There is no `module.toml`, no special
-directory structure, no registration step. If it's importable and it calls
-`Image` methods, it's a module.
+A module like "Nethermind" has two distinct concerns:
+
+| Concern | Happens | What it does |
+|---------|---------|-------------|
+| **Build** (setup) | Once per image | Compile the binary, install runtime apt packages |
+| **Install** | Once per instance | Create user, write config, create service, set up data dir |
+
+This separation is the core of the module API. The binary at
+`/opt/nethermind/` is shared; the config at `/etc/nm-mainnet/config.json`
+is per-instance.
+
+### Module structure
+
+A module is a Python class with three methods:
 
 ```python
-# tdx_nethermind/__init__.py
-from tdx import Image, Build
+class MyModule:
+    def setup(self, image):    ...  # Build + packages (once, idempotent)
+    def install(self, image):  ...  # Configure an instance (per-instance)
+    def apply(self, image):    ...  # Convenience: setup + install
+```
 
-def apply(image: Image, network: str = "mainnet", datadir: str = "/var/lib/nethermind"):
-    """Add Nethermind to a TDX VM image."""
-    image.build(Build.dotnet(
-        name="nethermind",
-        src=".",
-        sdk_version="10.0",
-        project="src/Nethermind/Nethermind.Runner",
-        output="/opt/nethermind/",
-    ))
+For simple modules that don't need multiple instances, a plain function
+works too:
 
-    image.user("nethermind", system=True, home=datadir)
-
-    image.service(
-        name="nethermind",
-        exec=f"/opt/nethermind/nethermind --config /etc/nethermind/config.json --datadir {datadir}",
-        after=["network-online.target"],
-        restart="always",
-        user="nethermind",
-    )
-
-    image.file("/etc/nethermind/config.json", src="configs/nethermind.json")
-    image.run(f"chmod 750 {datadir}")
+```python
+def apply(image):  # Setup + install in one shot
+    ...
 ```
 
 ### How modules compose
 
-Modules compose through normal Python function calls. The image builder
-(the person writing the TDXfile) controls the order and parameterization:
+Modules compose through Python function calls. The image builder controls
+the order:
 
 ```python
 from tdx import Image
-from tdx_nethermind import apply as nethermind
-from tdx_hardening import apply as hardening
-from tdx_monitoring import apply as monitoring
+from tdx_nethermind import Nethermind
+from tdx_hardening import apply as harden
 
 image = Image("my-node", base="debian/bookworm")
 
-hardening(image)
-nethermind(image, network="holesky")
-monitoring(image, metrics_port=9090)
+harden(image)
+
+nm = Nethermind()
+nm.setup(image)                                           # Build once
+nm.install(image, name="nm-mainnet", network="mainnet")   # Instance 1
+nm.install(image, name="nm-holesky", network="holesky")   # Instance 2
 ```
 
-There is no implicit ordering, no dependency graph to resolve, no merge
-rules. The image builder decides what gets applied and in what order.
-If two modules write to the same path, the second write wins (or raises
-an error, depending on the `Image` method).
-
-### What a module can provide
-
-Since modules are just Python code calling `Image` methods, they can
-contribute anything the `Image` API supports:
-
-- **Build artifacts** — compiled binaries via `image.build()`
-- **System packages** — distro packages via `image.install()`
-- **Configuration files** — static files or templates via `image.file()` / `image.template()`
-- **Systemd services** — via `image.service()`
-- **System users** — via `image.user()`
-- **Secrets** — declared via `image.secret()`, injected post-measurement
-- **Lifecycle hooks** — commands at any mkosi phase via `image.run()`, `image.prepare()`, etc.
-- **Kernel config** — via `image.kernel`
-- **Anything else** — it's Python; you can do whatever you want
-
-### Module packaging
-
-A module is a standard Python package. It uses `pyproject.toml` for
-metadata and distribution, just like any other Python library:
-
-```toml
-# pyproject.toml for a TDX module
-[project]
-name = "tdx-nethermind"
-version = "1.30.0"
-description = "Nethermind Ethereum execution client for TDX VMs"
-requires-python = ">=3.11"
-dependencies = ["tdx-vm-sdk"]
-
-[project.optional-dependencies]
-dev = ["pytest"]
-```
-
-Data files (config templates, scripts, etc.) are included via standard
-Python packaging mechanisms (`package_data`, `include_package_data`, or
-the `importlib.resources` API).
+No implicit ordering. No dependency graph. No merge rules. The image
+builder decides what to apply and when.
 
 ---
 
 ## 3. Module API
 
-### 3.1 Module as a function
+### 3.1 Full module example — Nethermind
 
-The simplest module is a single function:
+This is the reference example. It shows build/install separation, multiple
+instances, dependency declaration, and configuration.
+
+```python
+# tdx_nethermind/__init__.py
+
+from importlib.resources import files
+from tdx import Image, Build
+
+def _data(name: str) -> str:
+    """Resolve a data file bundled with this module."""
+    return str(files("tdx_nethermind").joinpath("data", name))
+
+
+class Nethermind:
+    """Nethermind Ethereum execution client.
+
+    Build the binary once, then install as many instances as you want
+    with different networks, ports, and data directories.
+    """
+
+    def setup(self, image: Image):
+        """Build the Nethermind binary and install runtime packages.
+
+        Idempotent — safe to call multiple times. The build cache
+        ensures the binary is compiled at most once.
+        """
+        image.install("ca-certificates", "libsnappy1v5")
+
+        image.build(Build.dotnet(
+            name="nethermind",
+            src=".",
+            sdk_version="10.0",
+            project="src/Nethermind/Nethermind.Runner",
+            output="/opt/nethermind/",
+            self_contained=True,
+            build_deps=["libsnappy-dev", "libgflags-dev"],
+            env={"DOTNET_CLI_TELEMETRY_OPTOUT": "1"},
+        ))
+
+    def install(
+        self,
+        image: Image,
+        *,
+        name: str = "nethermind",
+        network: str = "mainnet",
+        datadir: str | None = None,
+        rpc_port: int = 8545,
+        rpc_host: str = "127.0.0.1",
+        engine_port: int = 8551,
+        p2p_port: int = 30303,
+        memory_max: str = "8G",
+        limit_nofile: int = 65535,
+    ):
+        """Install one Nethermind instance.
+
+        Each call creates a separate user, config, data directory, and
+        systemd service. Call multiple times with different names for
+        multiple instances.
+        """
+        if datadir is None:
+            datadir = f"/var/lib/{name}"
+
+        # Per-instance user and data directory
+        image.user(name, system=True, home=datadir)
+
+        # Per-instance configuration
+        image.template(
+            src=_data("nethermind.cfg.j2"),
+            dest=f"/etc/{name}/config.json",
+            vars={
+                "network": network,
+                "datadir": datadir,
+                "rpc_port": rpc_port,
+                "rpc_host": rpc_host,
+                "engine_port": engine_port,
+                "p2p_port": p2p_port,
+            },
+        )
+
+        # Per-instance service
+        image.service(
+            name=name,
+            exec=f"/opt/nethermind/nethermind --config /etc/{name}/config.json --datadir {datadir}",
+            after=["network-online.target"],
+            restart="always",
+            user=name,
+            extra_unit={
+                "Service": {
+                    "MemoryMax": memory_max,
+                    "LimitNOFILE": str(limit_nofile),
+                },
+            },
+        )
+
+    def apply(self, image: Image, **kwargs):
+        """Convenience: setup + single install.
+
+        For the common case of one instance. Equivalent to:
+            self.setup(image)
+            self.install(image, **kwargs)
+        """
+        self.setup(image)
+        self.install(image, **kwargs)
+```
+
+### 3.2 Usage patterns
+
+**Single instance (common case):**
+
+```python
+nm = Nethermind()
+nm.apply(image, network="mainnet")
+```
+
+**Multiple instances:**
+
+```python
+nm = Nethermind()
+nm.setup(image)  # Build binary + install packages (once)
+
+nm.install(image, name="nm-mainnet",  network="mainnet",  rpc_port=8545, p2p_port=30303)
+nm.install(image, name="nm-holesky",  network="holesky",  rpc_port=8546, p2p_port=30304)
+nm.install(image, name="nm-sepolia",  network="sepolia",  rpc_port=8547, p2p_port=30305)
+```
+
+**Selective use (build only, custom config):**
+
+```python
+nm = Nethermind()
+nm.setup(image)  # Build binary
+
+# Skip nm.install — do my own configuration
+image.file("/etc/nethermind/custom-config.json", src="./my-config.json")
+image.service(
+    name="nethermind",
+    exec="/opt/nethermind/nethermind --config /etc/nethermind/custom-config.json",
+    user="nethermind",
+)
+```
+
+### 3.3 Simple module (function form)
+
+For modules that don't need multiple instances — hardening, monitoring
+agents, base configurations:
 
 ```python
 # tdx_hardening/__init__.py
 from tdx import Image
 
-def apply(image: Image):
+def apply(image: Image, strict: bool = True):
     """Standard TDX VM hardening."""
     image.install("iptables")
     image.file("/etc/sysctl.d/99-tdx-hardening.conf", src=_data("sysctl.conf"))
@@ -168,86 +277,16 @@ def apply(image: Image):
     image.run("rm -rf /usr/lib/systemd/system/serial-getty*")
     image.run("sysctl --system")
 
-
-def _data(name: str) -> str:
-    """Resolve a data file bundled with this module."""
-    from importlib.resources import files
-    return str(files("tdx_hardening").joinpath("data", name))
+    if strict:
+        image.run("rm -rf /usr/lib/systemd/system/systemd-homed*")
+        image.run("rm -rf /usr/lib/systemd/system/systemd-userdbd*")
 ```
 
-### 3.2 Module as a class
+The function form is for modules that are apply-once by nature. The class
+form with `setup()`/`install()` is for things that can have multiple
+instances.
 
-For more complex modules with multiple related components:
-
-```python
-# tdx_nethermind/__init__.py
-from tdx import Image, Build, fetch
-
-class Nethermind:
-    """Nethermind Ethereum execution client."""
-
-    def __init__(self, network: str = "mainnet", datadir: str = "/var/lib/nethermind"):
-        self.network = network
-        self.datadir = datadir
-
-    def apply(self, image: Image):
-        """Apply the full Nethermind stack."""
-        self.build(image)
-        self.configure(image)
-        self.service(image)
-
-    def build(self, image: Image):
-        """Just the build step — useful if you want to customize the rest."""
-        image.build(Build.dotnet(
-            name="nethermind",
-            src=".",
-            sdk_version="10.0",
-            project="src/Nethermind/Nethermind.Runner",
-            output="/opt/nethermind/",
-            self_contained=True,
-        ))
-
-    def configure(self, image: Image):
-        """Configuration files and users."""
-        image.user("nethermind", system=True, home=self.datadir)
-        image.template(
-            src=_data("nethermind.cfg.j2"),
-            dest="/etc/nethermind/config.json",
-            vars={"network": self.network, "datadir": self.datadir},
-        )
-        image.run(f"mkdir -p {self.datadir}")
-        image.run(f"chown nethermind:nethermind {self.datadir}")
-
-    def service(self, image: Image):
-        """Systemd service definition."""
-        image.service(
-            name="nethermind",
-            exec="/opt/nethermind/nethermind --config /etc/nethermind/config.json",
-            after=["network-online.target"],
-            restart="always",
-            user="nethermind",
-            extra_unit={"Service": {"MemoryMax": "8G", "LimitNOFILE": "65535"}},
-        )
-```
-
-Usage:
-
-```python
-from tdx import Image
-from tdx_nethermind import Nethermind
-
-image = Image("my-node", base="debian/bookworm")
-
-nm = Nethermind(network="holesky")
-nm.apply(image)
-
-# Or selectively:
-nm.build(image)
-nm.configure(image)
-# Skip the service — I'll define my own
-```
-
-### 3.3 Module with sub-components
+### 3.4 Module with sub-components
 
 A single Python package can expose multiple related modules:
 
@@ -256,510 +295,485 @@ A single Python package can expose multiple related modules:
 from tdx_ethereum.nethermind import Nethermind
 from tdx_ethereum.reth import Reth
 from tdx_ethereum.lighthouse import Lighthouse
-
-# tdx_ethereum/nethermind.py
-class Nethermind: ...
-
-# tdx_ethereum/reth.py
-class Reth: ...
+from tdx_ethereum.prysm import Prysm
 ```
 
-Usage:
+### 3.5 Module packaging
 
-```python
-from tdx_ethereum import Nethermind, Lighthouse
-
-nethermind = Nethermind(network="mainnet")
-lighthouse = Lighthouse(checkpoint_sync="https://...")
-
-nethermind.apply(image)
-lighthouse.apply(image)
-```
-
----
-
-## 4. Standard Builder Modules
-
-The SDK ships standard builder modules for common languages. These are
-regular modules — you can use them, extend them, or replace them entirely.
-
-The key design principle: **people have different requirements for how
-compilers are sourced.** Some are fine downloading a precompiled binary
-from the language's official release page. Others need to build the
-compiler from source for auditability. The builder modules support both
-approaches.
-
-### 4.1 Go builder — `tdx.builders.go`
-
-```python
-from tdx.builders.go import GoBuild
-
-# Option 1: Use official precompiled release (default)
-# Downloads from go.dev, verified by hash
-build = GoBuild(
-    version="1.22.5",
-    src="./my-app/",
-    output="/usr/local/bin/my-app",
-    ldflags="-s -w -X main.version=1.0.0",
-)
-image.build(build)
-
-# Option 2: Use a specific compiler tarball
-build = GoBuild(
-    compiler=fetch(
-        "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz",
-        sha256="904b924d435eaea086515c6fc840b4...",
-    ),
-    src="./my-app/",
-    output="/usr/local/bin/my-app",
-)
-
-# Option 3: Build Go from source
-from tdx.builders.go import GoFromSource
-
-go_compiler = GoFromSource(
-    version="1.22.5",
-    bootstrap_version="1.21.0",  # Uses Go 1.21 to build Go 1.22
-)
-build = GoBuild(
-    compiler=go_compiler,
-    src="./my-app/",
-    output="/usr/local/bin/my-app",
-)
-```
-
-### 4.2 Rust builder — `tdx.builders.rust`
-
-```python
-from tdx.builders.rust import RustBuild
-
-# Use official rustup toolchain (default)
-build = RustBuild(
-    toolchain="1.83.0",
-    src="./raiko/",
-    output="/usr/local/bin/raiko",
-    features=["tdx", "sgx"],
-    build_deps=["libssl-dev", "pkg-config"],
-)
-
-# Use a specific compiler tarball
-from tdx import fetch
-
-build = RustBuild(
-    compiler=fetch(
-        "https://static.rust-lang.org/dist/rust-1.83.0-x86_64-unknown-linux-gnu.tar.xz",
-        sha256="f1b5e8c8...",
-    ),
-    src="./raiko/",
-    output="/usr/local/bin/raiko",
-)
-```
-
-### 4.3 .NET builder — `tdx.builders.dotnet`
-
-```python
-from tdx.builders.dotnet import DotnetBuild
-
-build = DotnetBuild(
-    sdk_version="10.0",
-    src="./nethermind/",
-    project="src/Nethermind/Nethermind.Runner",
-    output="/opt/nethermind/",
-    self_contained=True,
-)
-```
-
-### 4.4 C/C++ builder — `tdx.builders.c`
-
-```python
-from tdx.builders.c import CBuild
-
-# Default: use distro GCC
-build = CBuild(
-    src="./my-tool/",
-    build_script="make release STATIC=1",
-    artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
-    build_deps=["cmake", "libssl-dev"],
-)
-
-# Specific GCC version
-from tdx import fetch
-
-gcc = fetch(
-    "https://ftp.gnu.org/gnu/gcc/gcc-14.2.0/gcc-14.2.0.tar.xz",
-    sha256="a7b2e3...",
-)
-build = CBuild(compiler=gcc, ...)
-```
-
-### 4.5 Reproducibility flags
-
-All standard builder modules set common reproducibility flags by default:
-
-- `SOURCE_DATE_EPOCH=0` — deterministic timestamps
-- `-trimpath` (Go) — strip build machine paths from binaries
-- `--remap-path-prefix` (Rust) — same
-- `-fdebug-prefix-map` (C/C++) — same
-- Sorted file lists, deterministic linking order where possible
-
-These can be disabled per-build:
-
-```python
-build = GoBuild(
-    version="1.22.5",
-    src="./app/",
-    output="/usr/local/bin/app",
-    reproducible=False,  # Disable reproducibility flags
-)
-```
-
-### 4.6 Custom builder — `Build.script()`
-
-For anything the typed builders don't cover, `Build.script()` remains the
-universal fallback:
-
-```python
-from tdx import Build
-
-custom = Build.script(
-    name="my-tool",
-    src="./tools/my-tool/",
-    build_script="make release",
-    artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
-    build_deps=["cmake", "libfoo-dev"],
-)
-image.build(custom)
-```
-
----
-
-## 5. Fetch Utility
-
-`fetch()` downloads a resource from a URL and verifies it against a known
-hash. This is the primitive that builder modules use internally, and that
-module authors can use directly for any external resource.
-
-### 5.1 Basic usage
-
-```python
-from tdx import fetch
-
-# Download and verify — returns a Path to the cached file
-tarball = fetch(
-    "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz",
-    sha256="904b924d435eaea086515c6fc840b4ab3336c5ba780356e20a4d7ab3c9f2...",
-)
-
-# Use the result
-image.run(f"tar -C /usr/local -xzf {tarball}")
-```
-
-### 5.2 Semantics
-
-- **Content-addressed caching.** Downloads are cached by their hash in
-  `~/.cache/tdx/fetch/<sha256>`. If the file exists and matches, no
-  download occurs.
-
-- **Hash is mandatory.** `fetch()` without a hash is an error. This is a
-  deliberate design choice — every external resource must be verified.
-
-- **Lockfile recording.** Every `fetch()` call is recorded in the lockfile
-  with its URL, hash, and the timestamp of first resolution. This creates
-  an auditable manifest of every external resource used in the build.
-
-- **Hash mismatch is fatal.** If the downloaded content doesn't match the
-  expected hash, the build fails immediately with a clear error:
-
-  ```
-  Error: hash mismatch for https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-    Expected: sha256:904b924d...
-    Got:      sha256:e3b0c442...
-
-  The remote content has changed. Verify the new content and update the hash.
-  ```
-
-### 5.3 Helper: `hash_of()`
-
-To compute the expected hash for a new resource:
-
-```bash
-# CLI
-tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-# sha256:904b924d435eaea086515c6fc840b4ab3336c5ba...
-```
-
-```python
-# Python
-from tdx import hash_of
-
-h = hash_of("https://go.dev/dl/go1.22.5.linux-amd64.tar.gz")
-print(h)  # sha256:904b924d...
-```
-
-### 5.4 Git source fetching
-
-For fetching git repositories (e.g., to build a compiler from source):
-
-```python
-from tdx import fetch_git
-
-# Fetch a specific tag
-src = fetch_git(
-    "https://github.com/golang/go",
-    tag="go1.22.5",
-    sha256="a1b2c3...",  # Hash of the tree contents at that tag
-)
-
-# Fetch a specific commit
-src = fetch_git(
-    "https://github.com/example/repo",
-    rev="a1b2c3d4e5f67890...",
-    sha256="d4e5f6...",
-)
-```
-
-The hash covers the file tree contents (not the git metadata), similar to
-Go's module hash. This means the same source tree produces the same hash
-regardless of git history, rebases, or re-tags.
-
----
-
-## 6. Users & Secrets
-
-### 6.1 System users
-
-`image.user()` creates system users in the image. This is the standard way
-to set up service accounts:
-
-```python
-image.user("nethermind", system=True, home="/var/lib/nethermind")
-image.user("monitoring", system=True, shell="/usr/sbin/nologin")
-```
-
-**API:**
-
-```python
-image.user(
-    name: str,
-    system: bool = True,          # Create as system user (low UID)
-    home: str | None = None,      # Home directory (created if specified)
-    shell: str = "/usr/sbin/nologin",
-    groups: list[str] | None = None,  # Additional groups
-    uid: int | None = None,       # Explicit UID (for reproducibility)
-)
-```
-
-Under the hood, this generates `useradd` commands in the postinst phase.
-If `home` is specified, the directory is created and owned by the user.
-
-### 6.2 Secrets
-
-Secrets are values that must not be baked into the image at build time.
-If a secret were included in the image, it would affect the TDX
-measurement — meaning the measurement would change every time the secret
-changes, and the secret would be extractable from the image file.
-
-Instead, secrets are **declared** at build time but **injected** after the
-VM boots and has been measured. The image contains a placeholder or a
-service that fetches the secret at runtime.
-
-```python
-image.secret(
-    "API_KEY",
-    description="API key for monitoring service",
-    dest="/etc/app/api-key",         # Where the secret will be placed at runtime
-)
-
-image.secret(
-    "SSH_AUTHORIZED_KEYS",
-    description="SSH public keys for admin access",
-    dest="/root/.ssh/authorized_keys",
-)
-
-image.secret(
-    "TLS_CERT",
-    description="TLS certificate for HTTPS endpoint",
-    dest="/etc/ssl/certs/app.pem",
-)
-```
-
-### 6.3 Secret delivery mechanisms
-
-The image needs a way to receive secrets after boot. The SDK provides
-pluggable delivery mechanisms:
-
-```python
-# SSH-based delivery (default for dev/staging)
-# After the VM boots, secrets are pushed via SSH/vsock
-image.secret_delivery("ssh")
-
-# Vsock-based delivery (recommended for production)
-# Host pushes secrets through a vsock channel
-image.secret_delivery("vsock")
-
-# Custom delivery
-# A user-provided script that runs at boot and fetches secrets
-image.secret_delivery("script", fetch_script="./scripts/fetch-secrets.sh")
-```
-
-The delivery mechanism generates:
-1. A systemd service that waits for secrets on the chosen channel
-2. A target (`secrets-ready.target`) that other services can depend on
-3. Proper file permissions on the secret destinations
-
-Services that depend on secrets can declare that dependency:
-
-```python
-image.service(
-    name="my-app",
-    exec="/usr/local/bin/my-app",
-    after=["secrets-ready.target"],
-    requires=["secrets-ready.target"],
-)
-```
-
-### 6.4 Why not just use environment variables?
-
-Environment variables are visible in `/proc/PID/environ`, logged by some
-init systems, and inherited by child processes. File-based secrets with
-restrictive permissions (mode 0400, owned by the service user) are more
-secure and easier to audit.
-
----
-
-## 7. Module Distribution & Dependencies
-
-### 7.1 Module sources
-
-Since modules are Python packages, they can come from anywhere Python
-packages come from:
-
-**PyPI (or private index):**
-```bash
-pip install tdx-nethermind
-```
-
-**Git repository:**
-```bash
-pip install git+https://github.com/NethermindEth/tdx-nethermind@v1.30.0
-```
-
-**Local path (during development):**
-```bash
-pip install -e ./modules/nethermind/
-```
-
-**Direct dependency in pyproject.toml:**
-```toml
-[project]
-dependencies = [
-    "tdx-vm-sdk",
-    "tdx-nethermind>=1.30",
-    "tdx-hardening~=1.0",
-]
-```
-
-### 7.2 Image project structure
-
-An image project is itself a Python package. Its `pyproject.toml` declares
-module dependencies, and its TDXfile imports and uses them:
+A module is a standard Python package:
 
 ```
-my-image/
-├── pyproject.toml        # Declares module dependencies
-├── tdx.lock              # Pins exact versions + hashes
-├── TDXfile               # Image definition (Python)
-├── configs/              # Local config files, templates
-│   ├── nethermind.cfg.j2
-│   └── monitoring.yml
-└── modules/              # Local modules (optional)
-    └── my-prover/
-        ├── pyproject.toml
-        └── tdx_my_prover/
-            └── __init__.py
+tdx-nethermind/
+├── pyproject.toml
+└── tdx_nethermind/
+    ├── __init__.py         # Module class
+    └── data/
+        ├── nethermind.cfg.j2
+        └── logging.xml.j2
 ```
 
 ```toml
 # pyproject.toml
 [project]
-name = "my-tdx-image"
-version = "1.0.0"
-dependencies = [
-    "tdx-vm-sdk",
-    "tdx-nethermind>=1.30",
-    "tdx-hardening~=1.0",
-    "tdx-monitoring>=0.5",
-]
+name = "tdx-nethermind"
+version = "1.30.0"
+description = "Nethermind Ethereum execution client for TDX VMs"
+requires-python = ">=3.11"
+dependencies = ["tdx-vm-sdk"]
 ```
 
-```python
-# TDXfile
-from tdx import Image
-from tdx_nethermind import Nethermind
-from tdx_hardening import apply as harden
-from tdx_monitoring import apply as monitoring
-
-image = Image("nethermind-prover", base="debian/bookworm")
-
-harden(image)
-
-nm = Nethermind(network="holesky")
-nm.apply(image)
-
-monitoring(image)
-
-image.secret("GRAFANA_API_KEY", dest="/etc/monitoring/api-key")
-image.secret_delivery("vsock")
-```
-
-### 7.3 Version pinning
-
-Standard Python version specifiers apply:
-
-| Specifier | Meaning |
-|-----------|---------|
-| `tdx-nethermind==1.30.0` | Exact version |
-| `tdx-nethermind>=1.30` | Minimum version |
-| `tdx-nethermind~=1.30` | Compatible release (>=1.30, <2.0) |
-| `tdx-nethermind>=1.30,<1.35` | Bounded range |
-
-The lockfile (see [Section 8](#8-lockfile)) pins exact versions with
-content hashes, regardless of the specifier used in `pyproject.toml`.
+Data files (config templates, scripts) are included via standard Python
+packaging (`package_data` or `importlib.resources`).
 
 ---
 
-## 8. Lockfile
+## 4. Dependency Declarations
 
-The lockfile (`tdx.lock`) ensures reproducible builds by pinning the exact
-version of every module and every fetched resource to a content hash.
+Modules need to express what they depend on. There are four kinds of
+dependencies, each handled differently.
 
-### 8.1 What gets locked
+### 4.1 Runtime packages — `image.install()`
 
-| Resource | What's recorded | How it's verified |
-|----------|----------------|-------------------|
-| PyPI module | Package name, version, source URL | SHA-256 of wheel/sdist |
-| Git module | Repo URL, resolved commit SHA | SHA-256 of file tree (dirhash) |
-| Local module | Relative path | SHA-256 of file tree |
-| `fetch()` resource | URL, content hash | SHA-256 of downloaded file |
-| `fetch_git()` resource | Repo URL, resolved commit | SHA-256 of file tree |
+Apt packages that must be present in the final image:
 
-### 8.2 Format
+```python
+def setup(self, image):
+    image.install("ca-certificates", "libsnappy1v5", "libc6")
+```
 
-TOML, to match `pyproject.toml` conventions. Human-readable for auditing
-and VCS-friendly for diffs.
+The Image deduplicates these. If two modules both call
+`image.install("ca-certificates")`, it appears once in the package list.
+
+### 4.2 Build-time packages — `build_deps` on `Build`
+
+Apt packages needed only during compilation. Installed in the build
+overlay, **not** in the final image:
+
+```python
+image.build(Build.dotnet(
+    name="nethermind",
+    src=".",
+    output="/opt/nethermind/",
+    build_deps=["libsnappy-dev", "libgflags-dev"],  # Build sandbox only
+))
+```
+
+mkosi installs these in the build sandbox and strips them from the
+final image automatically.
+
+### 4.3 Compiler / toolchain — builder modules
+
+"I need Go 1.22 to build this" is a toolchain dependency, handled by
+builder modules (see [Section 6](#6-standard-builder-modules)):
+
+```python
+from tdx.builders.go import GoBuild
+
+# GoBuild handles fetching + verifying Go 1.22
+image.build(GoBuild(
+    version="1.22.5",
+    src="./my-app/",
+    output="/usr/local/bin/my-app",
+))
+```
+
+The builder module decides how to source the compiler. The image builder
+can override by providing `compiler=`.
+
+### 4.4 Other modules — Python package dependencies
+
+"My module depends on another module" is a Python package dependency:
 
 ```toml
-# Auto-generated by tdx lock. Do not edit manually.
-# To update, run: tdx lock --update [module-name]
+# pyproject.toml
+[project]
+dependencies = [
+    "tdx-vm-sdk",
+    "tdx-dotnet-runtime>=10.0",
+]
+```
 
+In the module code:
+
+```python
+from tdx_dotnet_runtime import DotnetRuntime
+
+class Nethermind:
+    def setup(self, image):
+        # Ensure .NET runtime is set up first
+        runtime = DotnetRuntime(version="10.0")
+        runtime.setup(image)  # Idempotent — build cache handles dedup
+
+        image.build(Build.dotnet(...))
+```
+
+Since `setup()` is idempotent (see [Section 5](#5-build-cache)), calling
+it multiple times is safe.
+
+### 4.5 Binary dependencies — "I need the output of another build"
+
+Module A needs a binary that module B produces → module A depends on
+module B as a Python package and calls `B.setup(image)`:
+
+```python
+class MyApp:
+    def setup(self, image):
+        from tdx_libcustom import LibCustom
+        LibCustom().setup(image)  # Builds libcustom.so (idempotent)
+
+        image.build(Build.script(
+            name="my-app",
+            src="./app/",
+            build_script="make LDFLAGS='-L/usr/local/lib -lcustom'",
+            output="/usr/local/bin/my-app",
+        ))
+```
+
+### 4.6 Summary
+
+| Dependency type | How to declare | Deduplicated by |
+|----------------|---------------|-----------------|
+| Runtime apt packages | `image.install("pkg")` | Package name |
+| Build-time apt packages | `Build(..., build_deps=["pkg"])` | Package name |
+| Compiler/toolchain | Builder module (`GoBuild(version=...)`) | Build cache |
+| Another TDX module | Python dep + `module.setup(image)` | Build cache |
+| Binary from another build | Python dep + `module.setup(image)` | Build cache |
+
+---
+
+## 5. Build Cache
+
+The build cache ensures that the same build specification never executes
+twice — within one image or across images.
+
+### 5.1 Within one image — deduplication
+
+When `image.build(spec)` is called, the Image computes a cache key from
+the build specification. If the same key has already been registered, the
+call is a no-op:
+
+```python
+nm = Nethermind()
+nm.setup(image)   # Registers build for nethermind → /opt/nethermind/
+nm.setup(image)   # Same build spec → no-op (already registered)
+```
+
+This makes `setup()` idempotent. Any module can call another module's
+`setup()` without worrying about duplicate builds.
+
+The cache key is a hash of:
+- Builder type and version (e.g., `dotnet/10.0`)
+- Source path or identifier
+- Output path
+- Build flags, dependencies, environment variables
+- Compiler specification (if custom)
+
+### 5.2 Across images — artifact cache
+
+Built artifacts are cached in `~/.cache/tdx/builds/` keyed by content
+hash. If a previous image build already produced the same artifact (same
+source, same compiler, same flags), the cached result is reused without
+recompilation:
+
+```
+~/.cache/tdx/builds/
+├── sha256-a1b2c3.../
+│   ├── manifest.toml          # Build spec that produced this
+│   └── artifacts/
+│       └── opt/nethermind/
+│           ├── nethermind
+│           └── ...
+└── sha256-d4e5f6.../
+    └── ...
+```
+
+The artifact cache is content-addressed: same inputs → same key → same
+output. This means:
+
+- Image A and image B both use Nethermind v1.30.0 with the same .NET SDK
+  → binary compiles once.
+- Change a flag, dependency, or compiler version → different cache key →
+  fresh build.
+- `tdx cache clean --builds` clears build artifacts.
+
+### 5.3 Cache invalidation
+
+The cache is conservative — when in doubt, it rebuilds:
+
+- **Source changed**: Any file in `src` changed → new cache key.
+- **Compiler changed**: Different compiler tarball hash → new key.
+- **Flags changed**: Different `ldflags`, `features`, etc. → new key.
+- **Build deps changed**: Different `build_deps` list → new key.
+- **`--no-cache`**: Force rebuild, ignore cache entirely.
+
+### 5.4 How `image.install()` deduplicates
+
+Package installations are collected and deduplicated:
+
+```python
+image.install("ca-certificates", "libsnappy1v5")
+image.install("ca-certificates", "curl")
+# Result: install ca-certificates, curl, libsnappy1v5 (union, sorted)
+```
+
+The Image maintains a set of requested packages. The final list is the
+sorted union of all requests.
+
+---
+
+## 6. Standard Builder Modules
+
+The SDK ships standard builder modules for common languages. These handle
+compiler sourcing, reproducibility flags, and artifact installation.
+
+Each builder supports at least:
+1. Download a precompiled official release (default)
+2. Use a specific tarball provided via `fetch()` (airgapped/audited)
+3. Build the compiler from source (maximum auditability)
+
+### 6.1 Go — `tdx.builders.go`
+
+```python
+from tdx.builders.go import GoBuild, GoFromSource
+
+# Default: precompiled official release
+image.build(GoBuild(
+    version="1.22.5",
+    src="./my-app/",
+    output="/usr/local/bin/my-app",
+    ldflags="-s -w",
+))
+
+# Custom tarball
+image.build(GoBuild(
+    compiler=fetch("https://go.dev/dl/go1.22.5.linux-amd64.tar.gz", sha256="904b..."),
+    src="./my-app/",
+    output="/usr/local/bin/my-app",
+))
+
+# From source
+image.build(GoBuild(
+    compiler=GoFromSource(version="1.22.5", bootstrap_version="1.21.0"),
+    src="./my-app/",
+    output="/usr/local/bin/my-app",
+))
+```
+
+### 6.2 Rust — `tdx.builders.rust`
+
+```python
+from tdx.builders.rust import RustBuild
+
+image.build(RustBuild(
+    toolchain="1.83.0",
+    src="./raiko/",
+    output="/usr/local/bin/raiko",
+    features=["tdx", "sgx"],
+    build_deps=["libssl-dev", "pkg-config"],
+))
+```
+
+### 6.3 .NET — `tdx.builders.dotnet`
+
+```python
+from tdx.builders.dotnet import DotnetBuild
+
+image.build(DotnetBuild(
+    sdk_version="10.0",
+    src="./nethermind/",
+    project="src/Nethermind/Nethermind.Runner",
+    output="/opt/nethermind/",
+    self_contained=True,
+))
+```
+
+### 6.4 C/C++ — `tdx.builders.c`
+
+```python
+from tdx.builders.c import CBuild
+
+image.build(CBuild(
+    src="./my-tool/",
+    build_script="make release STATIC=1",
+    artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
+    build_deps=["cmake", "libssl-dev"],
+))
+```
+
+### 6.5 Custom — `Build.script()`
+
+Universal fallback:
+
+```python
+from tdx import Build
+
+image.build(Build.script(
+    name="my-tool",
+    src="./tools/my-tool/",
+    build_script="make release",
+    artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
+    build_deps=["cmake"],
+))
+```
+
+### 6.6 Reproducibility flags
+
+All standard builders set these by default:
+
+- `SOURCE_DATE_EPOCH=0` — deterministic timestamps
+- `-trimpath` (Go), `--remap-path-prefix` (Rust), `-fdebug-prefix-map`
+  (C/C++) — strip build paths
+- Sorted file lists, deterministic linking order
+
+Disable per-build with `reproducible=False`.
+
+---
+
+## 7. Fetch Utility
+
+`fetch()` downloads a resource and verifies it against a known hash.
+
+### 7.1 Usage
+
+```python
+from tdx import fetch
+
+tarball = fetch(
+    "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz",
+    sha256="904b924d435eaea...",
+)
+# Returns Path to cached, verified file
+```
+
+### 7.2 Semantics
+
+- **Content-addressed caching.** Cached in `~/.cache/tdx/fetch/<sha256>`.
+- **Hash is mandatory.** `fetch()` without a hash is an error.
+- **Lockfile recording.** Every `fetch()` is recorded in `tdx.lock`.
+- **Hash mismatch is fatal.** Clear error with expected vs. actual.
+
+### 7.3 Git source fetching
+
+```python
+from tdx import fetch_git
+
+src = fetch_git(
+    "https://github.com/golang/go",
+    tag="go1.22.5",
+    sha256="a1b2c3...",  # Hash of file tree contents (dirhash)
+)
+```
+
+### 7.4 Hash helper
+
+```bash
+tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
+# sha256:904b924d...
+```
+
+---
+
+## 8. Users & Secrets
+
+### 8.1 System users
+
+```python
+image.user(
+    name="nethermind",
+    system=True,                   # System user (low UID)
+    home="/var/lib/nethermind",     # Created and owned
+    shell="/usr/sbin/nologin",
+    groups=["disk"],
+    uid=800,                       # Explicit UID (reproducibility)
+)
+```
+
+Generates `useradd` commands in postinst. Duplicate user names are
+detected and reported as errors.
+
+### 8.2 Secrets — post-measurement injection
+
+Secrets are declared at build time but injected after the VM boots and
+has been measured. This keeps the measurement stable and the image
+secret-free.
+
+```python
+image.secret("JWT_SECRET", dest="/etc/nethermind/jwt.hex", owner="nethermind")
+image.secret("TLS_CERT", dest="/etc/ssl/certs/app.pem")
+```
+
+### 8.3 Secret delivery
+
+```python
+image.secret_delivery("ssh")     # Push via SSH after boot
+image.secret_delivery("vsock")   # Push via vsock channel
+image.secret_delivery("script", fetch_script="./fetch-secrets.sh")
+```
+
+Generates a `secrets-ready.target` that services can depend on:
+
+```python
+image.service(
+    name="nethermind",
+    exec="...",
+    after=["secrets-ready.target"],
+    requires=["secrets-ready.target"],
+)
+```
+
+### 8.4 Why post-measurement?
+
+- Measurement doesn't change when secrets rotate
+- Secrets aren't extractable from the image file
+- Secrets aren't in build logs, CI caches, or registries
+- Attestation proves the image code; secrets go only to attested VMs
+
+---
+
+## 9. Module Distribution
+
+Modules are standard Python packages:
+
+| Source | Example |
+|--------|---------|
+| PyPI | `pip install tdx-nethermind` |
+| Git repo | `pip install git+https://github.com/org/tdx-nethermind@v1.30` |
+| Local path | `pip install -e ./modules/nethermind/` |
+| pyproject.toml | `"tdx-nethermind>=1.30"` |
+
+### Image project structure
+
+```
+my-image/
+├── pyproject.toml        # Module dependencies
+├── tdx.lock              # Pinned versions + hashes
+├── TDXfile               # Image definition (Python)
+├── configs/              # Local config files, templates
+└── modules/              # Local modules (optional)
+    └── my-prover/
+        ├── pyproject.toml
+        └── tdx_my_prover/__init__.py
+```
+
+---
+
+## 10. Lockfile
+
+The lockfile (`tdx.lock`) pins every module and fetched resource to a
+content hash.
+
+### 10.1 Format
+
+```toml
+# Auto-generated by tdx lock. Do not edit.
 version = 1
 
 [[module]]
 name = "tdx-nethermind"
 version = "1.30.0"
 source = "pypi"
-url = "https://files.pythonhosted.org/packages/.../tdx_nethermind-1.30.0-py3-none-any.whl"
-integrity = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+url = "https://files.pythonhosted.org/packages/.../tdx_nethermind-1.30.0.whl"
+integrity = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe..."
 
 [[module]]
 name = "tdx-hardening"
@@ -767,417 +781,267 @@ version = "1.0.0"
 source = "git"
 git = "https://github.com/org/tdx-hardening"
 resolved_rev = "8f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a"
-integrity = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-[[module]]
-name = "tdx-my-prover"
-version = "0.1.0"
-source = "local"
-path = "./modules/my-prover"
-integrity = "sha256:d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
+integrity = "sha256:e3b0c44298fc1c149afbf4c8996fb924..."
 
 [[fetch]]
 url = "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz"
-integrity = "sha256:904b924d435eaea086515c6fc840b4ab3336c5ba780356e20a4d7ab3c9f2cafe"
-resolved_at = "2026-02-22T10:30:00Z"
-
-[[fetch]]
-url = "https://static.rust-lang.org/dist/rust-1.83.0-x86_64-unknown-linux-gnu.tar.xz"
-integrity = "sha256:f1b5e8c8a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0"
-resolved_at = "2026-02-22T10:30:00Z"
+integrity = "sha256:904b924d435eaea086515c6fc840b4ab..."
 ```
 
-### 8.3 Integrity computation
+### 10.2 Integrity
 
-Module integrity hashes are computed over file contents, not archive
-metadata:
+Module hashes use dirhash (like Go's approach — hash over sorted file
+contents). Fetch hashes are `sha256(file_contents)`.
 
-```
-1. List all files in the module (respecting .gitignore)
-2. Sort filenames lexicographically
-3. For each file: sha256(relative_path + "\0" + file_contents)
-4. Hash the concatenation of all per-file hashes
-```
-
-This is a content hash (like Go's dirhash). Two different git commits
-with identical file contents produce the same hash. A module moved to a
-different repo still validates if the content is unchanged.
-
-For `fetch()` resources, the hash is simply `sha256(file_contents)`.
-
-### 8.4 Lock commands
+### 10.3 Commands
 
 | Command | What happens |
 |---------|-------------|
-| `tdx lock` | Resolve all unlocked dependencies. Locked ones are not touched. |
-| `tdx lock --update` | Re-resolve ALL dependencies. |
-| `tdx lock --update tdx-nethermind` | Re-resolve a specific module. |
-| `tdx lock --dry-run` | Show what would change without writing. |
-| `tdx build` (no lockfile) | Implicitly runs `tdx lock` first. |
-| `tdx build` (lockfile exists) | Uses locked versions. Fails if dependencies changed. |
-| `tdx build --frozen` | Fails if lockfile is missing or stale. For CI. |
-
-### 8.5 Frozen builds
-
-In CI, use `--frozen` to ensure the build uses exactly what was tested:
-
-```bash
-tdx build --frozen
-```
-
-This mode:
-- Refuses to resolve any new dependencies
-- Refuses to download anything not already in the lockfile
-- Fails if any integrity hash doesn't match
-- Fails if the lockfile is stale (dependencies changed in `pyproject.toml`)
+| `tdx lock` | Resolve all unlocked deps |
+| `tdx lock --update` | Re-resolve everything |
+| `tdx lock --update tdx-nethermind` | Re-resolve one module |
+| `tdx build --frozen` | Fail if lockfile is stale (for CI) |
 
 ---
 
-## 9. CLI Commands
-
-### 9.1 Fetch utilities
+## 11. CLI Commands
 
 ```bash
-# Compute the hash of a remote resource
-tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-# sha256:904b924d435eaea086515c6fc840b4ab3336c5ba...
+# Build
+tdx build                          # Build the image
+tdx build --frozen                 # CI mode (strict lockfile)
+tdx build --no-cache               # Force rebuild everything
 
-# Compute the hash of a local file
-tdx fetch --hash ./go1.22.5.linux-amd64.tar.gz
+# Lock
+tdx lock                           # Resolve and lock dependencies
+tdx lock --update                  # Update all
+tdx lock --update tdx-nethermind   # Update one
 
-# Download and cache a resource (for pre-populating the cache)
-tdx fetch https://go.dev/dl/go1.22.5.linux-amd64.tar.gz \
-    --sha256 904b924d435eaea086515c6fc840b4ab3336c5ba...
-```
+# Fetch
+tdx fetch --hash <url-or-path>     # Compute hash of a resource
 
-### 9.2 Lock management
+# Cache
+tdx cache clean                    # Clear all caches
+tdx cache clean --builds           # Clear build artifacts only
+tdx cache clean --fetches          # Clear fetch cache only
 
-```bash
-# Resolve and lock all dependencies
-tdx lock
+# Secrets
+tdx secrets push --host <ip> --file ./secrets.env
+tdx secrets push --vsock <cid> --file ./secrets.env
+tdx secrets list                   # Show declared secrets
 
-# Update all dependencies
-tdx lock --update
-
-# Update a specific module
-tdx lock --update tdx-nethermind
-
-# Show what would change
-tdx lock --dry-run
-```
-
-### 9.3 Module development
-
-```bash
-# Compute the content hash of a module directory
-tdx module hash ./modules/my-prover/
-
-# Validate a module (check that it exports the expected API)
-tdx module validate ./modules/my-prover/
-```
-
-### 9.4 Secret management
-
-```bash
-# Push secrets to a running VM via SSH
-tdx secrets push --host <vm-ip> --key ./secrets.env
-
-# Push secrets via vsock (when running on the same host)
-tdx secrets push --vsock <cid> --key ./secrets.env
-
-# List declared secrets for an image
-tdx secrets list
+# Module development
+tdx module hash ./path/            # Compute content hash
+tdx module validate ./path/        # Check module structure
 ```
 
 ---
 
-## 10. Worked Examples
+## 12. Worked Examples
 
-### 10.1 Creating a simple module
+### 12.1 Dual Nethermind instances
 
-A monitoring agent module:
-
-```
-tdx-monitoring/
-├── pyproject.toml
-└── tdx_monitoring/
-    ├── __init__.py
-    └── data/
-        └── prometheus.yml.j2
-```
-
-```toml
-# pyproject.toml
-[project]
-name = "tdx-monitoring"
-version = "0.5.0"
-dependencies = ["tdx-vm-sdk"]
-```
-
-```python
-# tdx_monitoring/__init__.py
-from importlib.resources import files
-from tdx import Image, Build
-
-def apply(image: Image, metrics_port: int = 9090):
-    """Add Prometheus node exporter and monitoring agent."""
-    image.install("prometheus-node-exporter")
-
-    image.user("monitoring", system=True)
-
-    image.template(
-        src=str(files("tdx_monitoring").joinpath("data", "prometheus.yml.j2")),
-        dest="/etc/prometheus/prometheus.yml",
-        vars={"metrics_port": metrics_port},
-    )
-
-    image.service(
-        name="node-exporter",
-        exec="/usr/bin/prometheus-node-exporter",
-        restart="always",
-        user="monitoring",
-    )
-```
-
-### 10.2 Custom compiler build
-
-Building with a specific GCC version compiled from source:
-
-```python
-from tdx import Image, fetch, fetch_git
-from tdx.builders.c import CBuild
-
-# Fetch GCC source
-gcc_src = fetch_git(
-    "https://gcc.gnu.org/git/gcc.git",
-    tag="releases/gcc-14.2.0",
-    sha256="a7b2e3c4d5e6f7...",
-)
-
-image = Image("custom-build", base="debian/bookworm")
-
-# Build our tool with this specific GCC
-build = CBuild(
-    compiler_source=gcc_src,
-    src="./my-tool/",
-    build_script="make release STATIC=1 CC=/opt/gcc-14/bin/gcc",
-    artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
-    build_deps=["cmake", "libssl-dev"],
-)
-image.build(build)
-```
-
-### 10.3 Full image with secrets
+Running two Nethermind clients on different networks in one image:
 
 ```python
 from tdx import Image
 from tdx_nethermind import Nethermind
 from tdx_hardening import apply as harden
 
-image = Image("production-node", base="debian/bookworm")
+image = Image("dual-nethermind", base="debian/bookworm")
 
-# Hardening first
 harden(image)
 
-# Nethermind
-nm = Nethermind(network="mainnet", datadir="/var/lib/nethermind")
-nm.apply(image)
+nm = Nethermind()
+nm.setup(image)  # Build binary + install packages (once)
 
-# Secrets — declared but not baked into the image
-image.secret(
-    "NETHERMIND_JWT",
-    description="JWT secret for engine API authentication",
-    dest="/etc/nethermind/jwt.hex",
-    owner="nethermind",
-    mode="0400",
+# Mainnet instance
+nm.install(image,
+    name="nm-mainnet",
+    network="mainnet",
+    datadir="/var/lib/nm-mainnet",
+    rpc_port=8545,
+    engine_port=8551,
+    p2p_port=30303,
+    memory_max="16G",
 )
 
-image.secret(
-    "SSH_HOST_KEY",
-    description="SSH host private key",
-    dest="/etc/ssh/ssh_host_ed25519_key",
-    owner="root",
-    mode="0600",
+# Holesky testnet instance
+nm.install(image,
+    name="nm-holesky",
+    network="holesky",
+    datadir="/var/lib/nm-holesky",
+    rpc_port=8546,
+    engine_port=8552,
+    p2p_port=30304,
+    memory_max="4G",
 )
 
-# Secrets delivered via vsock from the host
+# Result:
+#   Binary:   /opt/nethermind/ (shared, built once)
+#   Users:    nm-mainnet, nm-holesky
+#   Configs:  /etc/nm-mainnet/config.json, /etc/nm-holesky/config.json
+#   Data:     /var/lib/nm-mainnet/, /var/lib/nm-holesky/
+#   Services: nm-mainnet.service, nm-holesky.service
+```
+
+### 12.2 Execution + consensus client pair
+
+```python
+from tdx import Image
+from tdx_nethermind import Nethermind
+from tdx_lighthouse import Lighthouse
+from tdx_hardening import apply as harden
+
+image = Image("eth-fullnode", base="debian/bookworm")
+
+harden(image)
+
+nm = Nethermind()
+nm.apply(image, network="mainnet")
+
+lh = Lighthouse()
+lh.apply(image, network="mainnet", execution_endpoint="http://127.0.0.1:8551")
+
+# JWT secret shared between EL and CL — injected post-measurement
+image.secret("JWT_SECRET", dest="/etc/ethereum/jwt.hex", owner="root", mode="0440")
+image.run("usermod -aG ethereum nethermind")
+image.run("usermod -aG ethereum lighthouse")
 image.secret_delivery("vsock")
+```
 
-# Make nethermind wait for secrets
-image.service(
-    name="nethermind",
-    exec="/opt/nethermind/nethermind --config /etc/nethermind/config.json",
-    after=["secrets-ready.target", "network-online.target"],
-    requires=["secrets-ready.target"],
-    restart="always",
-    user="nethermind",
+### 12.3 Custom compiler from source
+
+```python
+from tdx import Image, fetch_git
+from tdx.builders.go import GoBuild, GoFromSource
+
+image = Image("audited-build", base="debian/bookworm")
+
+go = GoFromSource(
+    version="1.22.5",
+    source=fetch_git(
+        "https://go.googlesource.com/go",
+        tag="go1.22.5",
+        sha256="a1b2c3...",
+    ),
+    bootstrap_version="1.21.0",
 )
-```
 
-### 10.4 Module that wraps a builder
-
-A module that provides a specific compiler version as a reusable component:
-
-```python
-# tdx_go122/__init__.py
-"""Go 1.22 toolchain module — provides a verified Go compiler."""
-
-from tdx import Image, fetch
-
-_GO_URL = "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz"
-_GO_SHA256 = "904b924d435eaea086515c6fc840b4ab3336c5ba..."
-
-def apply(image: Image):
-    """Install Go 1.22.5 into the build environment."""
-    tarball = fetch(_GO_URL, sha256=_GO_SHA256)
-    image.prepare(f"tar -C /usr/local -xzf {tarball}")
-    image.prepare("ln -sf /usr/local/go/bin/go /usr/local/bin/go")
-```
-
-Then other modules can depend on it:
-
-```toml
-# pyproject.toml for a module that needs Go
-[project]
-dependencies = ["tdx-vm-sdk", "tdx-go122"]
-```
-
-```python
-# TDXfile
-from tdx_go122 import apply as install_go
-from tdx import Image, Build
-
-image = Image("my-go-app", base="debian/bookworm")
-install_go(image)
-image.build(Build.script(
-    name="my-app",
-    src="./app/",
-    build_script="go build -trimpath -o $DESTDIR/usr/local/bin/my-app .",
-    output="/usr/local/bin/my-app",
+image.build(GoBuild(
+    compiler=go,
+    src="./my-prover/",
+    output="/usr/local/bin/my-prover",
+    ldflags="-s -w",
 ))
 ```
 
-### 10.5 Development workflow
+### 12.4 Module depending on another module
 
-During development, keep modules local:
+```python
+# tdx_monitoring/__init__.py
+from tdx import Image, Build
+from tdx_node_exporter import NodeExporter
 
+class Monitoring:
+    def setup(self, image: Image):
+        NodeExporter().setup(image)  # Idempotent dep
+        image.build(Build.go(
+            name="metrics-agg", version="1.22.5",
+            src=".", output="/usr/local/bin/metrics-agg",
+        ))
+
+    def install(self, image: Image, *, name: str = "monitoring", port: int = 9090):
+        image.user(name, system=True)
+        image.service(name=name, exec=f"/usr/local/bin/metrics-agg --port {port}", user=name)
+
+    def apply(self, image: Image, **kwargs):
+        self.setup(image)
+        self.install(image, **kwargs)
 ```
-my-project/
-├── pyproject.toml
-├── TDXfile
-└── modules/
-    └── my-agent/
-        ├── pyproject.toml
-        └── tdx_my_agent/
-            └── __init__.py
+
+### 12.5 Config-only module (no build)
+
+```python
+# tdx_hardening/__init__.py
+from importlib.resources import files
+from tdx import Image
+
+def apply(image: Image, strict: bool = True):
+    image.install("iptables")
+    image.file("/etc/sysctl.d/99-tdx.conf", src=str(files("tdx_hardening").joinpath("data", "sysctl.conf")))
+    image.run("rm -rf /usr/lib/systemd/system/getty*")
+    image.run("sysctl --system")
+    if strict:
+        image.run("rm -rf /usr/lib/systemd/system/systemd-homed*")
 ```
 
-```toml
-# pyproject.toml
-[project]
-dependencies = [
-    "tdx-vm-sdk",
-    "tdx-my-agent @ file:./modules/my-agent",
-]
-```
-
-When ready to publish, push the module to a git repo or PyPI and update
-the dependency:
-
-```toml
-[project]
-dependencies = [
-    "tdx-vm-sdk",
-    "tdx-my-agent>=1.0",
-]
-```
+No `setup()`/`install()` split — hardening is one-shot, not multi-instance.
 
 ---
 
-## 11. Design Decisions & Rationale
+## 13. Design Decisions & Rationale
 
-### Why Python libraries and not custom config files?
+### Why separate build from install?
 
-The previous design used `module.toml` — a custom declarative format.
-This worked for simple cases but had fundamental limitations:
+The `apply()` pattern conflates two concerns:
 
-- **Limited expressiveness.** Any conditional logic, loops, or dynamic
-  behavior required escape hatches (inline scripts, lifecycle hooks).
-  With Python, the full language is available.
-- **Learning curve.** Module authors had to learn both the TOML schema
-  *and* the Python DSL. Now there's just one thing to learn.
-- **Tooling.** Python has editors, linters, type checkers, formatters,
-  testing frameworks. Custom TOML schemas get none of this.
-- **Distribution.** Python has pip, PyPI, virtual environments, and
-  decades of packaging infrastructure. No need to build our own registry
-  or distribution system.
-- **Composition.** Python's import system handles namespacing, versioning,
-  and dependency resolution. Modules compose through function calls,
-  not through magic merge rules.
+1. **Building** — compile source code into a binary. Expensive,
+   deterministic, same output regardless of configuration.
+2. **Installing** — create a user, write config, set up a service.
+   Cheap, varies per instance.
+
+Two Nethermind instances on different networks share the same binary.
+Separating `setup()` from `install()` makes this natural. For simple
+modules (hardening, config-only), the function form `apply()` is
+simpler and encouraged.
+
+### Why an artifact cache?
+
+Without caching, iterating on config requires recompiling everything.
+With a content-addressed cache:
+
+- Change a config file → instant rebuild (binary cache hit)
+- Change compiler flags → fresh build (different cache key)
+- Different image, same module version → cache hit
+
+Same concept as ccache or Nix's binary cache. Builds are deterministic
+functions: same inputs → same outputs → cache.
+
+### Why idempotent setup()?
+
+When module A depends on module B, both might call `B.setup(image)`. The
+build cache makes this safe — the second call is a no-op. Modules can
+declare and ensure their dependencies without coordination.
+
+The alternative (topological sort of deps) adds complexity and takes
+control away from the image builder.
+
+### Why Python libraries and not config files?
+
+- Full language expressiveness (conditionals, loops, dynamic config)
+- One thing to learn (Python), not two (TOML schema + Python DSL)
+- Standard tooling (editors, linters, type checkers, testing)
+- Standard distribution (pip, PyPI, git)
 
 ### Why `fetch()` with mandatory hashes?
 
-For reproducible, measured builds, every input must be pinned. A compiler
-downloaded today might be different from one downloaded tomorrow (supply
-chain attack, CDN cache inconsistency, etc.). The `fetch()` utility makes
-this explicit: you must declare what you expect, and the build fails if
-reality doesn't match.
-
-This is the same principle as Go's `go.sum`, Nix's `narHash`, and
-Cargo's `checksum` — but applied to arbitrary external resources, not just
-package manager artifacts.
+Every external input must be pinned for reproducible, measured builds.
+A compiler downloaded today might differ tomorrow. The hash is explicit
+and auditable.
 
 ### Why are secrets post-measurement?
 
-TDX measures the VM image at boot time to produce an attestation report.
-If secrets were baked into the image:
+If secrets were in the image: measurements change on rotation, secrets
+are extractable from the file, secrets leak into build logs. Post-
+measurement injection keeps the image deterministic and secret-free.
 
-1. **The measurement changes** every time a secret rotates. This breaks
-   attestation policies that expect a stable measurement.
-2. **The secret is in the image file** on disk, extractable by anyone
-   with access to the host filesystem.
-3. **The secret is in the build log**, the CI cache, the container
-   registry, etc.
+### Dependency resolution — explicit, not automatic
 
-By injecting secrets after measurement (via SSH or vsock), the measured
-image is deterministic and secret-free. The attestation report proves
-the VM is running the expected code; the secrets are delivered only to
-VMs that pass attestation.
+Modules call `setup()` on their dependencies explicitly. No solver, no
+topological sort. The TDXfile controls order. This is intentional:
 
-### Why not Nix?
-
-Nix solves many of the same problems (reproducible builds, content-addressed
-storage, declarative composition). But:
-
-- Nix requires learning a new language and a large ecosystem
-- The TDX SDK already has a Python DSL — adding Nix would be a second
-  paradigm
-- Python's packaging ecosystem is larger and more familiar to the target
-  audience (Ethereum infra operators, cloud teams)
-- The `fetch()` + lockfile approach gives the reproducibility benefits
-  without the complexity
-
-### Why standard builder modules instead of hardcoded builders?
-
-The original `Build.go()`, `Build.rust()`, etc. hardcoded how compilers
-are obtained. But in practice:
-
-- Some teams require building compilers from source for audit compliance
-- Some need specific compiler patches or configurations
-- Some operate in airgapped environments with pre-staged tarballs
-- Some are fine with `apt install golang` and don't need any of this
-
-Making builders into modules means each team can choose their approach.
-The standard builders cover the common case (download official release,
-verify hash). Teams with stricter requirements bring their own.
-
-### Why not `tdx.toml` for module declarations?
-
-Since modules are Python packages declared in `pyproject.toml`, there's
-no need for a separate `tdx.toml` manifest. The image project's
-`pyproject.toml` declares its module dependencies using standard Python
-dependency syntax. The `tdx.lock` file pins exact versions.
-
-This eliminates one file and one concept from the system. Image builders
-already need `pyproject.toml` for their project metadata; adding module
-dependencies there is natural.
+- Build order is visible in the TDXfile
+- No diamond dependency problems (setup is idempotent)
+- No version conflicts (Python package manager handles it)
+- Image builder has full control
