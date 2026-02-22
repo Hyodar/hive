@@ -274,13 +274,16 @@ def apply(image: Image, strict: bool = True):
     image.install("iptables")
     image.file("/etc/sysctl.d/99-tdx-hardening.conf", src=_data("sysctl.conf"))
 
-    image.run("rm -rf /usr/lib/systemd/system/getty*")
-    image.run("rm -rf /usr/lib/systemd/system/serial-getty*")
-    image.run("sysctl --system")
-
+    # Debloat with defaults (or strict mode for extra stripping)
     if strict:
-        image.run("rm -rf /usr/lib/systemd/system/systemd-homed*")
-        image.run("rm -rf /usr/lib/systemd/system/systemd-userdbd*")
+        image.debloat()  # full TDX default: remove getty, homed, docs, caches, etc.
+    else:
+        image.debloat(
+            systemd_remove=["getty*", "serial-getty*"],  # minimal
+            strip_binaries=False,
+        )
+
+    image.run("sysctl --system")
 ```
 
 The function form is for modules that are apply-once by nature. The class
@@ -1252,10 +1255,8 @@ from tdx import Image
 def apply(image: Image, strict: bool = True):
     image.install("iptables")
     image.file("/etc/sysctl.d/99-tdx.conf", src=str(files("tdx_hardening").joinpath("data", "sysctl.conf")))
-    image.run("rm -rf /usr/lib/systemd/system/getty*")
+    image.debloat() if strict else image.debloat(systemd_remove=["getty*", "serial-getty*"])
     image.run("sysctl --system")
-    if strict:
-        image.run("rm -rf /usr/lib/systemd/system/systemd-homed*")
 ```
 
 No `setup()`/`install()` split — hardening is one-shot, not multi-instance.

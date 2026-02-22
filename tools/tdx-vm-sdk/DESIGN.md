@@ -265,6 +265,83 @@ image.service(
 )
 ```
 
+### Debloat — image stripping and hardening
+
+TDX images should be minimal. The SDK provides a declarative debloat
+API with a sensible default that matches the nethermind-tdx reference.
+
+```python
+# Apply the default TDX debloat (equivalent to nethermind-tdx's debloat-systemd.sh
+# plus standard image stripping). This is the recommended starting point.
+image.debloat()
+
+# Equivalent to:
+image.debloat(
+    # Systemd services to remove (glob patterns)
+    systemd_remove=[
+        "getty*",
+        "serial-getty*",
+        "systemd-homed*",
+        "systemd-userdbd*",
+        "systemd-firstboot*",
+        "systemd-resolved*",
+        "systemd-networkd-wait-online*",
+        "systemd-timesyncd*",
+    ],
+    # Additional paths to remove
+    paths_remove=[
+        "/usr/share/doc/*",
+        "/usr/share/info/*",
+        "/usr/share/man/*",
+        "/usr/share/lintian/*",
+        "/var/cache/apt/*",
+        "/var/lib/apt/lists/*",
+    ],
+    # Strip ELF binaries
+    strip_binaries=True,
+    # Remove shell profiles (no interactive login on TDX VMs)
+    shells=False,
+)
+
+# Customize: keep resolved and timesyncd, but remove everything else
+image.debloat(
+    systemd_keep=["systemd-resolved*", "systemd-timesyncd*"],
+)
+
+# Minimal debloat: only strip docs and caches, keep all services
+image.debloat(
+    systemd_remove=[],
+    strip_binaries=False,
+)
+
+# Add extra removals on top of the default
+image.debloat(
+    systemd_remove_extra=["systemd-journald*"],
+    paths_remove_extra=["/usr/share/zsh/"],
+)
+```
+
+The `image.debloat()` method generates `image.run()` commands (postinst
+phase). It always runs *after* package installation and service setup,
+so it won't interfere with apt or systemctl operations.
+
+Default behavior (what `image.debloat()` with no arguments does):
+
+| Category | Action | Rationale |
+|----------|--------|-----------|
+| getty/serial-getty | Remove | No interactive terminals on TDX VMs |
+| systemd-homed | Remove | No home directory management needed |
+| systemd-userdbd | Remove | No user database service needed |
+| systemd-firstboot | Remove | No first-boot wizard on headless VM |
+| systemd-resolved | Remove | Static DNS in TDX images |
+| systemd-timesyncd | Remove | Time comes from host or explicit NTP |
+| /usr/share/doc,man,info | Remove | No humans reading docs inside the VM |
+| apt caches | Remove | Saves space, packages already installed |
+| ELF binaries | Strip debug symbols | Smaller image, faster boot |
+| Shell profiles | Remove | No interactive shells |
+
+```
+
 ### Skeleton — files before the package manager
 
 ```python
@@ -338,15 +415,231 @@ with image.profile("azure"):
     image.attestation_backend = "azure"
 ```
 
+### Repositories — custom package sources
+
+```python
+# High-level: adds apt sources + keyring via skeleton
+image.repository(
+    url="https://packages.microsoft.com/debian/12/prod",
+    suite="bookworm",
+    components=["main"],
+    keyring="./keys/microsoft.gpg",
+)
+# Now dotnet packages are available during package install
+image.install("dotnet-sdk-10.0")
+
+# Low-level: same thing via skeleton() directly
+image.skeleton(
+    "/etc/apt/trusted.gpg.d/microsoft.gpg",
+    src="./keys/microsoft.gpg",
+)
+image.skeleton(
+    "/etc/apt/sources.list.d/microsoft.sources",
+    content="""\
+Types: deb
+URIs: https://packages.microsoft.com/debian/12/prod
+Suites: bookworm
+Components: main
+Signed-By: /etc/apt/trusted.gpg.d/microsoft.gpg
+""",
+)
+```
+
+### Measurements — pre-launch verification
+
+TDX images are measured by hardware (RTMRs for raw TDX, vTPM PCRs for
+cloud TDX). The SDK computes expected measurements at build time so
+operators can verify them before trusting a VM.
+
+```python
+from tdx import Image
+
+image = Image("my-vm", base="debian/bookworm")
+# ... full image definition ...
+
+# After building, compute expected measurements:
+# tdx measure TDXfile
+# tdx measure TDXfile --backend azure
+# tdx measure TDXfile --format json > measurements.json
+```
+
+Two measurement backends, matching the two TDX deployment models:
+
+```python
+# Raw TDX (bare-metal or QEMU): RTMR-based measurement
+# The SDK replays the TDX module's measurement algorithm over the
+# built image to produce expected RTMR values.
+#
+# RTMRs extend in order:
+#   RTMR[0] — firmware (OVMF/TDVF) measurement
+#   RTMR[1] — OS loader + kernel + initrd + cmdline
+#   RTMR[2] — OS runtime (rootfs dm-verity hash)
+#   RTMR[3] — application-defined (unused by default)
+
+# Cloud TDX (Azure, GCP): vTPM PCR-based measurement
+# Cloud providers wrap TDX in a vTPM. The SDK computes expected
+# PCR values matching the provider's measurement policy.
+#
+# Azure CVM measurement chain:
+#   PCR[0]  — firmware
+#   PCR[4]  — boot loader
+#   PCR[7]  — Secure Boot policy
+#   PCR[9]  — kernel + initrd
+#   PCR[11] — unified kernel image hash
+#   PCR[15] — custom (dm-verity root hash)
+```
+
+CLI usage:
+
+```bash
+# Compute RTMRs for raw TDX deployment
+tdx measure TDXfile
+#   RTMR[0]: a1b2c3d4...
+#   RTMR[1]: e5f6a7b8...
+#   RTMR[2]: c9d0e1f2...
+
+# Compute PCRs for Azure CVM deployment
+tdx measure TDXfile --backend azure
+#   PCR[0]:  1a2b3c4d...
+#   PCR[4]:  5e6f7a8b...
+#   ...
+
+# Verify a running VM's quote against expected measurements
+tdx verify --quote ./quote.bin --measurements ./measurements.json
+
+# Machine-readable output for CI/CD
+tdx measure TDXfile --format json > measurements.json
+tdx measure TDXfile --format cbor > measurements.cbor
+```
+
+### Deployment — build, measure, deploy workflow
+
+The SDK separates build, measure, and deploy into distinct steps.
+Each step is independently scriptable.
+
+```python
+# Project build path — where build artifacts and the final image go.
+# Defaults to ./build/ relative to the TDXfile.
+image.output_dir = "build"              # default
+image.output_dir = "/mnt/images/my-vm"  # absolute path for CI
+```
+
+```bash
+# Step 1: Build the image
+tdx build TDXfile --output ./build/
+#   → ./build/my-vm.raw           (disk image)
+#   → ./build/my-vm.vmlinuz       (kernel)
+#   → ./build/my-vm.initrd        (initrd, if applicable)
+#   → ./build/SHA256SUMS           (checksums)
+
+# Step 2: Compute measurements
+tdx measure TDXfile --output ./build/
+#   → ./build/my-vm.measurements.json
+
+# Step 3: Deploy
+tdx deploy TDXfile --target qemu          # local QEMU/KVM
+tdx deploy TDXfile --target azure         # Azure CVM
+tdx deploy TDXfile --target gcp           # GCP Confidential VM
+tdx deploy TDXfile --target ssh://host    # remote bare-metal via SSH
+```
+
+Deployment targets in the TDXfile:
+
+```python
+# Local QEMU — for development and testing
+image.deploy(
+    target="qemu",
+    memory="4G",
+    cpus=2,
+    vsock_cid=3,
+    # extra_args passed directly to qemu-system-x86_64
+    extra_args=["-nographic"],
+)
+
+# Azure Confidential VM
+image.deploy(
+    target="azure",
+    resource_group="my-rg",
+    vm_size="Standard_DC4as_v5",
+    location="eastus",
+    # Azure-specific: the image is uploaded to a managed disk
+)
+
+# GCP Confidential VM
+image.deploy(
+    target="gcp",
+    project="my-project",
+    zone="us-central1-a",
+    machine_type="n2d-standard-4",
+)
+
+# Remote bare-metal via SSH
+image.deploy(
+    target="ssh://root@10.0.0.1",
+    image_path="/var/lib/vms/my-vm.raw",
+)
+```
+
+The three steps are designed to be used independently:
+
+```python
+#!/usr/bin/env python3
+"""build.py — Build the image."""
+import subprocess
+subprocess.run(["tdx", "build", "TDXfile", "--output", "build/"], check=True)
+```
+
+```python
+#!/usr/bin/env python3
+"""measure.py — Compute and store measurements."""
+import subprocess, json
+result = subprocess.run(
+    ["tdx", "measure", "TDXfile", "--format", "json"],
+    capture_output=True, text=True, check=True,
+)
+measurements = json.loads(result.stdout)
+# Upload to attestation service, store in CI artifacts, etc.
+print(f"RTMR[2] (rootfs): {measurements['rtmr'][2]}")
+```
+
+```python
+#!/usr/bin/env python3
+"""deploy.py — Deploy to target environment."""
+import subprocess
+subprocess.run(["tdx", "deploy", "TDXfile", "--target", "qemu"], check=True)
+```
+
+Or all in one:
+
+```bash
+tdx build TDXfile --output build/ && \
+tdx measure TDXfile --output build/ && \
+tdx deploy TDXfile --target qemu
+```
+
 ## CLI
 
 ```bash
-tdx build TDXfile                        # Build the image
+# Build
+tdx build TDXfile                        # Build the image (output: ./build/)
 tdx build TDXfile --profile dev          # Build with a profile
+tdx build TDXfile --output /tmp/out/     # Custom output path
 tdx build TDXfile --emit-mkosi ./out/    # Inspect generated mkosi configs
 tdx build TDXfile --mkosi-override ./o/  # Layer custom mkosi.conf
-tdx measure TDXfile                      # Compute expected measurements
-tdx run TDXfile                          # Build + launch in QEMU
+
+# Measure
+tdx measure TDXfile                      # RTMRs for raw TDX (default)
+tdx measure TDXfile --backend azure      # PCRs for Azure CVM
+tdx measure TDXfile --format json        # Machine-readable output
+tdx verify --quote q.bin --measurements m.json  # Verify a live VM
+
+# Deploy
+tdx deploy TDXfile --target qemu         # Local QEMU/KVM
+tdx deploy TDXfile --target azure        # Azure Confidential VM
+tdx deploy TDXfile --target ssh://host   # Remote bare-metal
+
+# Inspect
+tdx inspect TDXfile                      # Show resolved config
 ```
 
 ## Generated output structure

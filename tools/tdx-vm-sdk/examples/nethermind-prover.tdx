@@ -2,10 +2,13 @@
 
 This shows the full range of the SDK, including all mkosi lifecycle phases:
 - Skeleton files (before package manager)
+- Custom repositories (e.g. Microsoft .NET)
 - Source sync, prepare, build, postinst, finalize, postoutput
 - Building custom packages from source
 - Full VM configurability
 - Services with systemd escape hatches
+- Measurements (RTMRs for raw TDX, PCRs for cloud)
+- Deployment targets
 - Boot-time init (runtime, not build-time)
 - Profiles for dev vs production
 """
@@ -18,6 +21,11 @@ image = Image(
     name="nethermind-prover",
     base="debian/bookworm",
 )
+
+# --- Output path ---
+# Where the built image and artifacts go. Default: ./build/
+# image.output_dir = "build"
+# image.output_dir = "/mnt/ci-images/nethermind-prover"  # absolute for CI
 
 # --- Kernel: TDX defaults, with one extra knob ---
 
@@ -58,6 +66,16 @@ image.network(
 
 image.skeleton("/etc/apt/apt.conf.d/99no-recommends",
     content="APT::Install-Recommends \"false\";\nAPT::Install-Suggests \"false\";\n")
+
+# --- Repositories: custom package sources before install ---
+# Add Microsoft's repo so dotnet-sdk is available via apt
+
+image.repository(
+    url="https://packages.microsoft.com/debian/12/prod",
+    suite="bookworm",
+    components=["main"],
+    keyring="./keys/microsoft.gpg",
+)
 
 # --- System packages ---
 
@@ -165,14 +183,15 @@ image.template(
 # --- Postinst: image customization after artifacts installed ---
 # image.run() maps to mkosi.postinst
 
-# Debloat systemd (like nethermind-tdx's debloat-systemd.sh)
-image.run("""
-rm -rf /usr/lib/systemd/system/getty*
-rm -rf /usr/lib/systemd/system/serial-getty*
-rm -rf /usr/lib/systemd/system/systemd-homed*
-rm -rf /usr/lib/systemd/system/systemd-userdbd*
-rm -rf /usr/lib/systemd/system/systemd-firstboot*
-""")
+# Debloat: remove unnecessary systemd services, strip docs/caches,
+# strip ELF debug symbols. Default matches nethermind-tdx's debloat.
+image.debloat()
+
+# Or customize:
+# image.debloat(
+#     systemd_keep=["systemd-resolved*"],  # keep resolved, remove the rest
+#     paths_remove_extra=["/usr/share/zsh/"],
+# )
 
 # Create users and directories
 image.run("""
@@ -203,6 +222,24 @@ image.clean("rm -rf ./build-cache/nethermind ./build-cache/prover")
 
 image.on_boot("/usr/local/bin/tdx-init --format on_initialize --key tpm")
 
+# --- Deployment targets ---
+# Define how to launch/deploy this image. Multiple targets can coexist.
+
+image.deploy(
+    target="qemu",
+    memory="8G",
+    cpus=4,
+    vsock_cid=3,
+    extra_args=["-nographic"],
+)
+
+image.deploy(
+    target="azure",
+    resource_group="nethermind-rg",
+    vm_size="Standard_DC4as_v5",
+    location="eastus",
+)
+
 # --- Profiles ---
 
 with image.profile("dev"):
@@ -213,3 +250,31 @@ with image.profile("azure"):
     image.cloud = "azure"
     image.secure_boot = True
     image.attestation_backend = "azure"
+
+# --- Usage ---
+#
+# Build:
+#   tdx build TDXfile --output build/
+#
+# Measure (raw TDX):
+#   tdx measure TDXfile
+#     RTMR[0]: a1b2c3d4...  (firmware)
+#     RTMR[1]: e5f6a7b8...  (kernel + cmdline)
+#     RTMR[2]: c9d0e1f2...  (rootfs dm-verity)
+#
+# Measure (Azure CVM):
+#   tdx measure TDXfile --backend azure --profile azure
+#     PCR[0]:  ...  (firmware)
+#     PCR[4]:  ...  (boot loader)
+#     PCR[11]: ...  (UKI hash)
+#
+# Deploy locally:
+#   tdx deploy TDXfile --target qemu
+#
+# Deploy to Azure:
+#   tdx deploy TDXfile --target azure --profile azure
+#
+# Three-step CI pipeline:
+#   tdx build TDXfile --output build/
+#   tdx measure TDXfile --format json > build/measurements.json
+#   tdx deploy TDXfile --target azure --profile azure
