@@ -148,12 +148,13 @@ class Nethermind:
         """
         image.install("ca-certificates", "libsnappy1v5")
 
-        image.add_build(Build.dotnet(
+        image.build(Build.dotnet(
             name="nethermind",
             src=".",
             sdk_version="10.0",
             project="src/Nethermind/Nethermind.Runner",
             output="/opt/nethermind/",
+            target="x86_64",  # build target architecture
             self_contained=True,
             build_deps=["libsnappy-dev", "libgflags-dev"],
             env={"DOTNET_CLI_TELEMETRY_OPTOUT": "1"},
@@ -331,7 +332,7 @@ packaging (`package_data` or `importlib.resources`).
 ## 4. mkosi Lifecycle Mapping
 
 The Image object is a **declarative collector** — calls like
-`image.install()`, `image.add_build()`, and `image.run()` don't execute
+`image.install()`, `image.build()`, and `image.run()` don't execute
 immediately. They record what should happen. The SDK compiler then sorts
 everything into the correct mkosi phase. Module authors need to understand
 which phase each method targets, because it determines what's available
@@ -348,10 +349,10 @@ Phase               mkosi artifact          Image methods that target it
 1. sync             mkosi.sync              image.sync()
 2. skeleton         mkosi.skeleton/         image.skeleton()
 3. package install  mkosi.conf [Content]    image.install()          ← Packages=
-                                            image.add_build(build_deps=) ← BuildPackages=
+                                            image.build(build_deps=) ← BuildPackages=
                                             image.repository()       ← Repositories=
 4. prepare          mkosi.prepare           image.prepare()
-5. build            mkosi.build.d/          image.add_build()
+5. build            mkosi.build.d/          image.build()
 6. extra files      mkosi.extra/            image.file(), image.template(), image.service()
 7. postinst         mkosi.postinst          image.user(), image.service(), image.run()
 8. finalize         mkosi.finalize          image.finalize()
@@ -418,7 +419,7 @@ after base packages are installed, before the build phase. Has network
 access. Use for `pip install`, `npm install`, or other package managers
 that need the base system in place.
 
-**build** (`image.add_build()`) — Each `BuildArtifact` generates a script
+**build** (`image.build()`) — Each `BuildArtifact` generates a script
 in `mkosi.build.d/`. Runs in a **build overlay** with:
 - `$DESTDIR` — where artifacts must be placed to reach the final image
 - `$SRCDIR` — mounted source trees
@@ -535,7 +536,7 @@ class Nethermind:
 
         # Phase: build (mkosi.build.d/ script)
         # build_deps → BuildPackages= (overlay only, stripped from final image)
-        image.add_build(Build.dotnet(
+        image.build(Build.dotnet(
             name="nethermind",
             src=".",
             output="/opt/nethermind/",
@@ -565,8 +566,8 @@ These two are equivalent:
 
 ```python
 # Order A                           # Order B
-image.run("echo configured")        image.add_build(Build.go(...))
-image.add_build(Build.go(...))          image.install("curl")
+image.run("echo configured")        image.build(Build.go(...))
+image.build(Build.go(...))          image.install("curl")
 image.install("curl")               image.run("echo configured")
 ```
 
@@ -581,7 +582,7 @@ which module methods to call first.
 
 ### 4.7 Advanced phases for module authors
 
-Most modules only need `image.install()`, `image.add_build()`, `image.run()`,
+Most modules only need `image.install()`, `image.build()`, `image.run()`,
 `image.file()`, `image.template()`, `image.service()`, and `image.user()`.
 The advanced lifecycle methods (`sync`, `prepare`, `finalize`,
 `postoutput`, `on_boot`) are available for modules that need them:
@@ -596,7 +597,7 @@ class SpecialModule:
         image.prepare("pip install meson ninja")
 
         # Compile
-        image.add_build(Build.script(name="special", src=".", build_script="meson compile"))
+        image.build(Build.script(name="special", src=".", build_script="meson compile"))
 
     def install(self, image, *, name="special"):
         image.user(name, system=True)
@@ -631,7 +632,7 @@ Apt packages needed only during compilation. Installed in the build
 overlay, **not** in the final image:
 
 ```python
-image.add_build(Build.dotnet(
+image.build(Build.dotnet(
     name="nethermind",
     src=".",
     output="/opt/nethermind/",
@@ -651,7 +652,7 @@ builder modules (see [Section 7](#7-standard-builder-modules)):
 from tdx.builders.go import GoBuild
 
 # GoBuild handles fetching + verifying Go 1.22
-image.add_build(GoBuild(
+image.build(GoBuild(
     version="1.22.5",
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -685,7 +686,7 @@ class Nethermind:
         runtime = DotnetRuntime(version="10.0")
         runtime.setup(image)  # Idempotent — build cache handles dedup
 
-        image.add_build(Build.dotnet(...))
+        image.build(Build.dotnet(...))
 ```
 
 Since `setup()` is idempotent (see [Section 6](#6-build-cache)), calling
@@ -702,7 +703,7 @@ class MyApp:
         from tdx_libcustom import LibCustom
         LibCustom().setup(image)  # Builds libcustom.so (idempotent)
 
-        image.add_build(Build.script(
+        image.build(Build.script(
             name="my-app",
             src="./app/",
             build_script="make LDFLAGS='-L/usr/local/lib -lcustom'",
@@ -729,7 +730,7 @@ twice — within one image or across images.
 
 ### 6.1 Within one image — deduplication
 
-When `image.add_build(spec)` is called, the Image computes a cache key from
+When `image.build(spec)` is called, the Image computes a cache key from
 the build specification. If the same key has already been registered, the
 call is a no-op:
 
@@ -812,13 +813,18 @@ Each builder supports at least:
 2. Use a specific tarball provided via `fetch()` (airgapped/audited)
 3. Build the compiler from source (maximum auditability)
 
+All builders accept a `target` parameter specifying the build target
+architecture (e.g. `"x86_64"`, `"aarch64"`). Defaults to the host
+architecture if omitted. The Image-level default can be set with
+`Image(target="x86_64")`.
+
 ### 7.1 Go — `tdx.builders.go`
 
 ```python
 from tdx.builders.go import GoBuild, GoFromSource
 
 # Default: precompiled official release
-image.add_build(GoBuild(
+image.build(GoBuild(
     version="1.22.5",
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -826,14 +832,14 @@ image.add_build(GoBuild(
 ))
 
 # Custom tarball
-image.add_build(GoBuild(
+image.build(GoBuild(
     compiler=fetch("https://go.dev/dl/go1.22.5.linux-amd64.tar.gz", sha256="904b..."),
     src="./my-app/",
     output="/usr/local/bin/my-app",
 ))
 
 # From source
-image.add_build(GoBuild(
+image.build(GoBuild(
     compiler=GoFromSource(version="1.22.5", bootstrap_version="1.21.0"),
     src="./my-app/",
     output="/usr/local/bin/my-app",
@@ -845,7 +851,7 @@ image.add_build(GoBuild(
 ```python
 from tdx.builders.rust import RustBuild
 
-image.add_build(RustBuild(
+image.build(RustBuild(
     toolchain="1.83.0",
     src="./raiko/",
     output="/usr/local/bin/raiko",
@@ -859,7 +865,7 @@ image.add_build(RustBuild(
 ```python
 from tdx.builders.dotnet import DotnetBuild
 
-image.add_build(DotnetBuild(
+image.build(DotnetBuild(
     sdk_version="10.0",
     src="./nethermind/",
     project="src/Nethermind/Nethermind.Runner",
@@ -873,7 +879,7 @@ image.add_build(DotnetBuild(
 ```python
 from tdx.builders.c import CBuild
 
-image.add_build(CBuild(
+image.build(CBuild(
     src="./my-tool/",
     build_script="make release STATIC=1",
     artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
@@ -888,7 +894,7 @@ Universal fallback:
 ```python
 from tdx import Build
 
-image.add_build(Build.script(
+image.build(Build.script(
     name="my-tool",
     src="./tools/my-tool/",
     build_script="make release",
@@ -1083,7 +1089,7 @@ contents). Fetch hashes are `sha256(file_contents)`.
 | `img.lock()` | Resolve all unlocked deps |
 | `img.lock(update=True)` | Re-resolve everything |
 | `img.lock(update="tdx-nethermind")` | Re-resolve one module |
-| `img.build(frozen=True)` | Fail if lockfile is stale (for CI) |
+| `img.bake(frozen=True)` | Fail if lockfile is stale (for CI) |
 
 ---
 
@@ -1097,10 +1103,10 @@ from tdx import Image
 img = Image(build_dir="build", base="debian/bookworm")
 # ... configuration ...
 
-# Build
-img.build()                         # Build the image
-img.build(frozen=True)              # CI mode (strict lockfile)
-img.build(no_cache=True)            # Force rebuild everything
+# Bake (produce the VM image via lima-vm)
+img.bake()                          # Bake the image
+img.bake(frozen=True)               # CI mode (strict lockfile)
+img.bake(no_cache=True)             # Force rebuild everything
 
 # Measure
 rtmrs = img.measure(backend="rtmr")         # Raw TDX measurements
@@ -1114,9 +1120,14 @@ img.deploy(target="azure", resource_group="my-rg", vm_size="Standard_DC4as_v5")
 
 # Profile-scoped operations
 with img.profile("dev"):
-    img.build()
+    img.bake()
     img.measure(backend="rtmr")
     img.deploy(target="qemu", memory="4G")
+
+# Batch profile operations
+img.profiles("dev", "prod").bake()           # Bake multiple profiles (single lima-vm execution)
+img.all_profiles().bake()                    # Bake all defined profiles
+img.all_profiles().measure(backend="rtmr")   # Measure all profiles
 
 # Lock
 img.lock()                          # Resolve and lock dependencies
@@ -1226,7 +1237,7 @@ go = GoFromSource(
     bootstrap_version="1.21.0",
 )
 
-image.add_build(GoBuild(
+image.build(GoBuild(
     compiler=go,
     src="./my-prover/",
     output="/usr/local/bin/my-prover",
@@ -1244,7 +1255,7 @@ from tdx_node_exporter import NodeExporter
 class Monitoring:
     def setup(self, image: Image):
         NodeExporter().setup(image)  # Idempotent dep
-        image.add_build(Build.go(
+        image.build(Build.go(
             name="metrics-agg", version="1.22.5",
             src=".", output="/usr/local/bin/metrics-agg",
         ))
@@ -1273,6 +1284,40 @@ def apply(image: Image, strict: bool = True):
 ```
 
 No `setup()`/`install()` split — hardening is one-shot, not multi-instance.
+
+### 13.6 Full pipeline with profiles
+
+```python
+from tdx import Image, Kernel
+from tdx_nethermind import Nethermind
+from tdx_hardening import apply as harden
+
+img = Image(build_dir="build", base="debian/bookworm", target="x86_64")
+img.kernel = Kernel.tdx(version="6.8")
+
+harden(img)
+
+nm = Nethermind()
+nm.apply(img, network="mainnet")
+
+# Dev profile: add debugging tools
+with img.profile("dev"):
+    img.ssh(enabled=True)
+    img.install("strace", "gdb")
+    img.debloat(enabled=False)
+
+# Bake all profiles in a single lima-vm execution
+results = img.all_profiles().bake()
+
+# Measure all profiles
+measurements = img.all_profiles().measure(backend="rtmr")
+for name, m in measurements.items():
+    m.to_json(f"build/{name}/measurements.json")
+
+# Deploy the dev profile locally
+with img.profile("dev"):
+    img.deploy(target="qemu", memory="4G")
+```
 
 ---
 
@@ -1341,3 +1386,28 @@ topological sort. The TDXfile controls order. This is intentional:
 - No diamond dependency problems (setup is idempotent)
 - No version conflicts (Python package manager handles it)
 - Image builder has full control
+
+### Why `build()` vs `bake()`?
+
+`build()` registers compilation steps — "compile this Go project," "build
+this .NET app." `bake()` produces the final VM image. The names reflect
+the conceptual difference: `build()` is about individual artifacts,
+`bake()` is about the whole image. `bake()` runs inside lima-vm to
+provide a reproducible Linux build environment regardless of the host OS.
+
+### Why lima-vm for baking?
+
+mkosi needs a Linux environment with specific tooling (systemd-nspawn,
+package managers). lima-vm provides this consistently on macOS, Windows
+WSL, and Linux. The SDK controls the lima-vm instance lifecycle — it
+starts the VM, mounts the necessary directories, runs mkosi, and collects
+the output. For multi-profile bakes, the same lima-vm instance is reused,
+and the shared build cache means common compilation steps run only once.
+
+### Why `profiles()` and `all_profiles()`?
+
+The `with img.profile("name"):` context manager works well for single-profile
+operations, but batch operations like "bake all profiles" need a different
+API. `img.profiles("dev", "prod").bake()` is clearer than a loop, and it
+enables the SDK to optimize — using a single lima-vm instance and sharing
+the build cache across all profiles in one execution.

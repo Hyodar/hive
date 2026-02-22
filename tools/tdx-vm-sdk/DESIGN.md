@@ -39,7 +39,7 @@ not a black box.
 ### 4. SDK, not CLI
 
 There is no CLI. Everything is a Python method on `Image`. Users who want a
-CLI can trivially build one from the SDK. The three core operations — build,
+CLI can trivially build one from the SDK. The three core operations — bake,
 measure, deploy — are all methods on the same `Image` object:
 
 ```python
@@ -47,7 +47,7 @@ from tdx import Image
 
 img = Image(build_dir="build")
 # ... configure ...
-img.build()                              # build the image
+img.bake()                               # bake the image (via lima-vm)
 img.measure(backend="rtmr")             # compute measurements from build artifacts
 img.deploy(target="qemu", memory="4G")  # deploy the built image
 ```
@@ -61,29 +61,30 @@ operating on the default profile (configurable via `Image(default_profile=...)`)
 ```python
 img = Image(build_dir="build")
 img.install("ca-certificates")          # → default profile
-img.build()                              # → builds default profile
+img.bake()                               # → bakes default profile
 
 with img.profile("dev"):
     img.install("strace", "gdb")        # → dev profile only
-    img.build()                          # → builds dev profile only
+    img.bake()                           # → bakes dev profile only
     img.deploy(target="qemu")           # → deploys dev profile
 ```
 
 ## mkosi Lifecycle Mapping
 
 The SDK maps directly to mkosi's build phases. Every phase is exposed.
-When you call `image.build()`, the SDK generates mkosi configs and
-invokes mkosi:
+When you call `image.bake()`, the SDK generates mkosi configs and invokes
+mkosi inside a lima-vm instance:
 
 ```
-image.build()
+image.bake()
     |
+    +-- starts lima-vm instance
     +-- generates mkosi.conf      ◄──────────  Image(), Kernel(), install()
     |                                           mkosi phase
     +-- image.skeleton()         ──────────►  mkosi.skeleton/
     +-- image.sync()             ──────────►  mkosi.sync
     +-- image.prepare()          ──────────►  mkosi.prepare
-    +-- image.add_build()        ──────────►  mkosi.build.d/
+    +-- image.build()            ──────────►  mkosi.build.d/
     +-- image.file() / template()──────────►  mkosi.extra/
     +-- image.run()              ──────────►  mkosi.postinst
     +-- image.finalize()         ──────────►  mkosi.finalize
@@ -92,7 +93,8 @@ image.build()
     +-- image.clean()            ──────────►  mkosi.clean
     +-- image.partitions()       ──────────►  mkosi.repart/
     +-- image.on_boot()          ──────────►  systemd oneshot service
-    +-- invokes mkosi
+    +-- invokes mkosi (inside lima-vm)
+    +-- stops lima-vm instance
 ```
 
 ### Phase execution order
@@ -102,7 +104,7 @@ image.build()
 | 1  | skeleton/      | `image.skeleton()`       | (file copy)    | Base filesystem before package manager |
 | 2  | mkosi.sync     | `image.sync()`           | Host           | Source synchronization |
 | 3  | mkosi.prepare  | `image.prepare()`        | Image (nspawn) | pip, npm, etc. after base packages |
-| 4  | mkosi.build.d/ | `image.add_build()`      | Build overlay  | Compile from source ($DESTDIR) |
+| 4  | mkosi.build.d/ | `image.build()`      | Build overlay  | Compile from source ($DESTDIR) |
 | 5  | mkosi.extra/   | `image.file()`           | (file copy)    | Static files into image |
 | 6  | mkosi.postinst | `image.run()`            | Image (nspawn) | Configure image, enable services |
 | 7  | mkosi.finalize | `image.finalize()`       | Host           | Host-side post-processing ($BUILDROOT) |
@@ -129,8 +131,9 @@ image.build()
 ```
 img = Image(build_dir="build")
 # ... configuration calls ...
-img.build()
+img.bake()
     |
+    +-- starts lima-vm instance
     +-- resolves Build declarations → build scripts
     +-- generates mkosi.conf (from Image config)
     +-- generates mkosi.skeleton/ (from image.skeleton() calls)
@@ -146,8 +149,9 @@ img.build()
     +-- generates kernel .config (from Kernel() config)
     +-- generates systemd .service units (from image.service() calls)
     +-- generates boot-time oneshot service (from image.on_boot() calls)
-    +-- invokes mkosi (actual image build)
-    +-- returns BuildResult
+    +-- invokes mkosi (inside lima-vm)
+    +-- returns BakeResult
+    +-- stops lima-vm instance
 
 img.measure(backend="rtmr")
     |
@@ -205,10 +209,11 @@ img.network(
 img.ssh(enabled=True, key_delivery="http")
 ```
 
-### add_build — reproducible package building
+### build — reproducible package building
 
-`image.add_build()` registers build steps (compiled from source).
-These run in the mkosi build overlay phase.
+`image.build()` registers build steps (compiled from source).
+These run in the mkosi build overlay phase. Each build step specifies a
+`target` architecture — defaults to the host architecture if omitted.
 
 Builder modules provide flexible compiler sourcing — use precompiled
 releases, custom tarballs via `fetch()`, or build compilers from source:
@@ -226,6 +231,7 @@ prover = GoBuild(
     version="1.22.5",
     src="./prover/",
     output="/usr/local/bin/my-prover",
+    target="x86_64",                         # build target architecture
     ldflags="-s -w -X main.version=1.0.0",
 )
 
@@ -234,6 +240,7 @@ raiko = RustBuild(
     toolchain="1.83.0",
     src="./raiko/",
     output="/usr/local/bin/raiko",
+    target="x86_64",
     features=["tdx", "sgx"],
     build_deps=["libssl-dev", "pkg-config"],
 )
@@ -244,6 +251,7 @@ nethermind = DotnetBuild(
     src="./nethermind/",
     project="src/Nethermind/Nethermind.Runner",
     output="/opt/nethermind/",
+    target="x86_64",
 )
 
 # Universal fallback — any build system
@@ -253,10 +261,24 @@ custom = Build.script(
     build_script="make release",
     artifacts={"build/my-tool": "/usr/local/bin/my-tool"},
     build_deps=["cmake", "libfoo-dev"],
+    target="x86_64",
 )
 
-img.add_build(prover, raiko, nethermind, custom)
+img.build(prover, raiko, nethermind, custom)
 ```
+
+The `target` parameter maps to cross-compilation flags in each builder:
+
+| Builder | `target="aarch64"` effect |
+|---------|--------------------------|
+| Go | `GOARCH=arm64` |
+| Rust | `--target aarch64-unknown-linux-gnu` |
+| .NET | `-r linux-arm64` |
+| C/C++ | `CC=aarch64-linux-gnu-gcc` |
+| Script | Sets `$TARGET_ARCH=aarch64` in build env |
+
+The Image-level default can be set with `Image(target="x86_64")`.
+Per-build `target=` overrides the Image default.
 
 ### Fetch — verified resource downloads
 
@@ -523,15 +545,24 @@ with img.profile("azure"):
     img.secure_boot = True
     img.attestation_backend = "azure"
 
-# Build the default profile
-img.build()
+# Bake the default profile
+img.bake()
 
-# Build only the dev profile
+# Bake only the dev profile
 with img.profile("dev"):
-    img.build()
+    img.bake()
+
+# Bake multiple profiles in a single lima-vm execution
+img.profiles("dev", "azure").bake()
+
+# Bake all defined profiles
+img.all_profiles().bake()
 
 # Measure the default profile
 measurements = img.measure(backend="rtmr")
+
+# Measure all profiles
+img.all_profiles().measure(backend="rtmr")
 
 # Measure the azure profile
 with img.profile("azure"):
@@ -544,6 +575,43 @@ img.deploy(target="qemu", memory="4G")
 with img.profile("dev"):
     img.deploy(target="qemu", memory="4G")
 ```
+
+### Batch profile operations — `profiles()` and `all_profiles()`
+
+`img.profiles(...)` and `img.all_profiles()` return a `ProfileSet` that
+supports the same operations as a single-profile context (`bake()`,
+`measure()`, `deploy()`), but operates on multiple profiles at once.
+
+```python
+# Select specific profiles
+ps = img.profiles("dev", "prod")
+
+# Or all defined profiles
+ps = img.all_profiles()
+
+# Bake — single lima-vm execution for all profiles
+results = ps.bake()
+# results["dev"].image_path → Path("build/dev/my-vm.raw")
+# results["prod"].image_path → Path("build/prod/my-vm.raw")
+
+# Measure — one measurement set per profile
+measurements = ps.measure(backend="rtmr")
+# measurements["dev"][0] → RTMR[0] for dev profile
+# measurements["prod"][2] → RTMR[2] for prod profile
+
+# Deploy — launches one VM per profile
+ps.deploy(target="qemu", memory="4G")
+```
+
+**Why `bake()` shares a single lima-vm execution:** Each profile produces
+a distinct image, but the compilation environment (lima-vm instance) is
+shared. Build steps that are common across profiles (same compiler, same
+source, same flags) run once in the shared build cache. Only the
+profile-specific configuration and final image assembly differ. This is
+significantly faster than baking each profile in its own lima-vm instance.
+
+**`deploy()` on a ProfileSet:** Unlike `bake()`, deploy launches separate
+VMs — one per profile. Each profile's image is deployed independently.
 
 ### Repositories — custom package sources
 
@@ -575,33 +643,68 @@ Signed-By: /etc/apt/trusted.gpg.d/microsoft.gpg
 )
 ```
 
-### build — execute the image build
+### bake — produce the VM image
 
-`image.build()` generates mkosi configs from all the configuration
-registered on the image, then invokes mkosi to produce the disk image.
+`image.bake()` generates mkosi configs from all the configuration
+registered on the image, starts a lima-vm instance, runs mkosi inside it,
+and produces the disk image.
 
 ```python
 img = Image(build_dir="build", base="debian/bookworm")
 # ... configuration ...
 
-# Build the (default profile) image
-result = img.build()
+# Bake the (default profile) image
+result = img.bake()
 # result.image_path  → Path("build/my-vm.raw")
 # result.kernel_path → Path("build/my-vm.vmlinuz")
 # result.build_dir   → Path("build/")
 
-# Build a specific profile
+# Bake a specific profile
 with img.profile("dev"):
-    result = img.build()
+    result = img.bake()
 
-# Inspect the generated mkosi configs without building
+# Bake multiple profiles (single lima-vm execution)
+results = img.profiles("dev", "prod").bake()
+# results["dev"].image_path → Path("build/dev/my-vm.raw")
+# results["prod"].image_path → Path("build/prod/my-vm.raw")
+
+# Bake all defined profiles
+results = img.all_profiles().bake()
+
+# Inspect the generated mkosi configs without baking
 img.emit_mkosi("./out/")
 ```
 
-If `build()` is called without a prior `build()` having been run, it
-builds. If build artifacts already exist in `build_dir`, `measure()` and
-`deploy()` use them directly — they do not require `build()` to be
+If `bake()` is called without a prior `bake()` having been run, it
+bakes. If build artifacts already exist in `build_dir`, `measure()` and
+`deploy()` use them directly — they do not require `bake()` to be
 called in the same script.
+
+#### lima-vm integration
+
+`bake()` runs the entire mkosi build inside a lima-vm instance. This
+provides a clean, reproducible Linux build environment regardless of the
+host OS (macOS, Windows WSL, or Linux).
+
+```
+img.bake()
+    |
+    +-- 1. Generate mkosi configs from Image declarations
+    +-- 2. Start lima-vm instance (or reuse running one)
+    |       - Mounts source trees, build cache, and output dir
+    |       - Installs mkosi + build dependencies
+    +-- 3. Run mkosi inside the lima-vm instance
+    |       - All mkosi phases execute in the VM
+    |       - Build cache shared via mounted volume
+    +-- 4. Collect output artifacts from the VM
+    +-- 5. Stop lima-vm instance (unless keep_alive=True)
+```
+
+For batch operations (`img.profiles(...).bake()` or
+`img.all_profiles().bake()`), step 2 happens once. Each profile's mkosi
+invocation (step 3) runs sequentially in the same VM, sharing the build
+cache. Common build steps (same compiler, same source, same flags)
+hit the cache and execute only once across all profiles.
 
 ### measure — compute expected measurements
 
@@ -699,14 +802,14 @@ img = Image(build_dir="build", base="debian/bookworm")
 img.kernel = Kernel.tdx(version="6.8")
 img.install("ca-certificates")
 img.debloat()
-img.add_build(Build.go(
+img.build(Build.go(
     name="my-prover", src="./prover/",
     go_version="1.22", output="/usr/local/bin/my-prover",
 ))
 img.service(name="my-prover", exec="/usr/local/bin/my-prover")
 
-# Build, measure, deploy
-img.build()
+# Bake, measure, deploy
+img.bake()
 rtmrs = img.measure(backend="rtmr")
 rtmrs.to_json("build/measurements.json")
 img.deploy(target="qemu", memory="4G", cpus=2)
