@@ -9,16 +9,17 @@ from **installing** (configure an instance — can happen many times).
 1. [Goals](#1-goals)
 2. [Concepts](#2-concepts)
 3. [Module API](#3-module-api)
-4. [Dependency Declarations](#4-dependency-declarations)
-5. [Build Cache](#5-build-cache)
-6. [Standard Builder Modules](#6-standard-builder-modules)
-7. [Fetch Utility](#7-fetch-utility)
-8. [Users & Secrets](#8-users--secrets)
-9. [Module Distribution](#9-module-distribution)
-10. [Lockfile](#10-lockfile)
-11. [CLI Commands](#11-cli-commands)
-12. [Worked Examples](#12-worked-examples)
-13. [Design Decisions & Rationale](#13-design-decisions--rationale)
+4. [mkosi Lifecycle Mapping](#4-mkosi-lifecycle-mapping)
+5. [Dependency Declarations](#5-dependency-declarations)
+6. [Build Cache](#6-build-cache)
+7. [Standard Builder Modules](#7-standard-builder-modules)
+8. [Fetch Utility](#8-fetch-utility)
+9. [Users & Secrets](#9-users--secrets)
+10. [Module Distribution](#10-module-distribution)
+11. [Lockfile](#11-lockfile)
+12. [CLI Commands](#12-cli-commands)
+13. [Worked Examples](#13-worked-examples)
+14. [Design Decisions & Rationale](#14-design-decisions--rationale)
 
 ---
 
@@ -327,12 +328,204 @@ packaging (`package_data` or `importlib.resources`).
 
 ---
 
-## 4. Dependency Declarations
+## 4. mkosi Lifecycle Mapping
+
+The Image object is a **declarative collector** — calls like
+`image.install()`, `image.build()`, and `image.run()` don't execute
+immediately. They record what should happen. The SDK compiler then sorts
+everything into the correct mkosi phase. Module authors need to understand
+which phase each method targets, because it determines what's available
+at that point (base packages? build artifacts? other images?).
+
+### 4.1 mkosi phases and Image methods
+
+mkosi builds images through a fixed sequence of phases. Each Image method
+maps to exactly one phase:
+
+```
+Phase               mkosi artifact          Image methods that target it
+─────────────────── ─────────────────────── ─────────────────────────────────────
+1. skeleton         mkosi.skeleton/         image.skeleton()
+2. package install  mkosi.conf [Content]    image.install()          ← Packages=
+                                            image.build(build_deps=) ← BuildPackages=
+3. sync             mkosi.sync              image.sync()
+4. prepare          mkosi.prepare           image.prepare()
+5. build            mkosi.build.d/          image.build()
+6. extra files      mkosi.extra/            image.file(), image.template(), image.service()
+7. postinst         mkosi.postinst          image.run(), image.user()
+8. finalize         mkosi.finalize          image.finalize()
+9. (image written)
+10. postoutput      mkosi.postoutput        image.postoutput()
+11. clean           mkosi.clean             image.clean()
+──── not mkosi ──── ──────────────────────  ─────────────────────────────────────
+VM boot             systemd oneshot         image.on_boot()
+```
+
+### 4.2 What each phase does
+
+**skeleton** (`image.skeleton()`) — Files placed in the image
+*before* the package manager runs. Use for custom apt sources, base
+`/etc/resolv.conf` for build-time DNS, or directory structure that
+packages expect to exist.
+
+**package install** — mkosi runs the package manager. Two separate
+package lists:
+- `Packages=` (from `image.install()`) → installed in the **final image**
+- `BuildPackages=` (from `build_deps=`) → installed in a **build overlay**
+  that is discarded after the build phase. Never in the final image.
+
+**sync** (`image.sync()`) — Runs on the **host** before anything
+else. Use for `git submodule update`, fetching source tarballs, etc.
+
+**prepare** (`image.prepare()`) — Runs **inside** the image namespace
+after base packages are installed, before the build phase. Has network
+access. Use for `pip install`, `npm install`, or other package managers
+that need the base system in place.
+
+**build** (`image.build()`) — Each `BuildArtifact` generates a script
+in `mkosi.build.d/`. Runs in a build overlay with:
+- `$DESTDIR` — where artifacts should be placed for the final image
+- `$SRCDIR` — mounted source trees
+- `BuildPackages` installed (but not in the final image)
+
+This is where compilers run. The overlay is discarded after — only
+files written to `$DESTDIR` survive into the final image.
+
+**extra files** (`image.file()`, `image.template()`, `image.service()`)
+— Static files and rendered templates are placed into `mkosi.extra/`,
+which mkosi copies into the image **after** build scripts complete.
+Service unit files go here too (`mkosi.extra/etc/systemd/system/`).
+
+**postinst** (`image.run()`) — Runs **inside** the image namespace
+after build artifacts and extra files are installed. This is where most
+image configuration happens:
+- User creation (from `image.user()` — auto-generated into postinst)
+- Service enablement (`systemctl enable` — auto-generated for each
+  `image.service()`)
+- Secret directory setup (auto-generated for each `image.secret()`)
+- Debloating, hardening, any `image.run()` commands
+
+**finalize** (`image.finalize()`) — Runs on the **host** (not inside
+the image) with `$BUILDROOT` pointing to the image filesystem. Use for
+host-side tools, foreign architecture operations, or anything that needs
+tools not available inside the image.
+
+**postoutput** (`image.postoutput()`) — Runs on the host after the
+disk image file is written. Use for computing checksums, signing,
+measurements, upload.
+
+**boot** (`image.on_boot()`) — NOT a build phase. Generates a systemd
+oneshot service that runs when the VM actually boots. Use for TDX
+attestation initialization, disk encryption key fetching, runtime setup.
+
+### 4.3 Why module authors need to care
+
+The phase matters because it determines what's available:
+
+| In this phase... | Base packages? | Build overlay? | Build artifacts? | Extra files? |
+|-----------------|---------------|---------------|-----------------|-------------|
+| skeleton | No | No | No | No |
+| prepare | Yes | No | No | No |
+| build | Yes | Yes (build_deps) | Being created | No |
+| postinst | Yes | No (stripped) | Yes | Yes |
+| finalize | (host) | No | Yes | Yes |
+
+A module that calls `image.run("nethermind --version")` works because
+`image.run()` targets postinst, which happens after the build phase
+installs the binary. But `image.prepare("/opt/nethermind/nethermind --version")`
+would fail — the binary doesn't exist yet during prepare.
+
+### 4.4 Phase mapping in the Nethermind module
+
+Here's which phase each call in the Nethermind module targets:
+
+```python
+class Nethermind:
+    def setup(self, image):
+        # Phase: package install (Packages= in mkosi.conf)
+        image.install("ca-certificates", "libsnappy1v5")
+
+        # Phase: build (mkosi.build.d/ script)
+        # build_deps → BuildPackages= (overlay only, stripped from final image)
+        image.build(Build.dotnet(
+            name="nethermind",
+            src=".",
+            output="/opt/nethermind/",
+            build_deps=["libsnappy-dev", "libgflags-dev"],
+        ))
+
+    def install(self, image, *, name="nethermind", ...):
+        # Phase: postinst (user creation commands auto-generated)
+        image.user(name, system=True, home=datadir)
+
+        # Phase: extra files (rendered template → mkosi.extra/)
+        image.template(src=_data("nethermind.cfg.j2"), dest=f"/etc/{name}/config.json", ...)
+
+        # Phase: extra files (unit file → mkosi.extra/etc/systemd/system/)
+        # Phase: postinst (systemctl enable auto-generated)
+        image.service(name=name, exec="...", ...)
+```
+
+Note: `image.service()` spans two phases — the unit file goes to
+`mkosi.extra/` (extra files phase), while `systemctl enable` is
+auto-generated in the postinst script.
+
+### 4.5 The Image is a declarative collector
+
+Call order within a module doesn't matter for cross-phase operations.
+These two are equivalent:
+
+```python
+# Order A                           # Order B
+image.run("echo configured")        image.build(Build.go(...))
+image.build(Build.go(...))          image.install("curl")
+image.install("curl")               image.run("echo configured")
+```
+
+Both produce the same mkosi output: `curl` in `Packages=`, the Go build
+in `mkosi.build.d/`, and "echo configured" in `mkosi.postinst`. The
+compiler sorts methods into their phases regardless of call order.
+
+**Within a single phase**, order is preserved. If a module calls
+`image.run("A")` then `image.run("B")`, the postinst script runs A
+before B. The TDXfile author controls cross-module ordering by choosing
+which module methods to call first.
+
+### 4.6 Advanced phases for module authors
+
+Most modules only need `image.install()`, `image.build()`, `image.run()`,
+`image.file()`, `image.template()`, `image.service()`, and `image.user()`.
+The advanced lifecycle methods (`sync`, `prepare`, `finalize`,
+`postoutput`, `on_boot`) are available for modules that need them:
+
+```python
+class SpecialModule:
+    def setup(self, image):
+        # Fetch sources before build
+        image.sync("git submodule update --init --recursive")
+
+        # Install Python deps needed by build scripts
+        image.prepare("pip install meson ninja")
+
+        # Compile
+        image.build(Build.script(name="special", src=".", build_script="meson compile"))
+
+    def install(self, image, *, name="special"):
+        image.user(name, system=True)
+        image.service(name=name, exec="/usr/local/bin/special")
+
+        # Run attestation init on every VM boot
+        image.on_boot("/usr/local/bin/special --init-attestation")
+```
+
+---
+
+## 5. Dependency Declarations
 
 Modules need to express what they depend on. There are four kinds of
 dependencies, each handled differently.
 
-### 4.1 Runtime packages — `image.install()`
+### 5.1 Runtime packages — `image.install()`
 
 Apt packages that must be present in the final image:
 
@@ -344,7 +537,7 @@ def setup(self, image):
 The Image deduplicates these. If two modules both call
 `image.install("ca-certificates")`, it appears once in the package list.
 
-### 4.2 Build-time packages — `build_deps` on `Build`
+### 5.2 Build-time packages — `build_deps` on `Build`
 
 Apt packages needed only during compilation. Installed in the build
 overlay, **not** in the final image:
@@ -361,10 +554,10 @@ image.build(Build.dotnet(
 mkosi installs these in the build sandbox and strips them from the
 final image automatically.
 
-### 4.3 Compiler / toolchain — builder modules
+### 5.3 Compiler / toolchain — builder modules
 
 "I need Go 1.22 to build this" is a toolchain dependency, handled by
-builder modules (see [Section 6](#6-standard-builder-modules)):
+builder modules (see [Section 7](#7-standard-builder-modules)):
 
 ```python
 from tdx.builders.go import GoBuild
@@ -380,7 +573,7 @@ image.build(GoBuild(
 The builder module decides how to source the compiler. The image builder
 can override by providing `compiler=`.
 
-### 4.4 Other modules — Python package dependencies
+### 5.4 Other modules — Python package dependencies
 
 "My module depends on another module" is a Python package dependency:
 
@@ -407,10 +600,10 @@ class Nethermind:
         image.build(Build.dotnet(...))
 ```
 
-Since `setup()` is idempotent (see [Section 5](#5-build-cache)), calling
+Since `setup()` is idempotent (see [Section 6](#6-build-cache)), calling
 it multiple times is safe.
 
-### 4.5 Binary dependencies — "I need the output of another build"
+### 5.5 Binary dependencies — "I need the output of another build"
 
 Module A needs a binary that module B produces → module A depends on
 module B as a Python package and calls `B.setup(image)`:
@@ -429,7 +622,7 @@ class MyApp:
         ))
 ```
 
-### 4.6 Summary
+### 5.6 Summary
 
 | Dependency type | How to declare | Deduplicated by |
 |----------------|---------------|-----------------|
@@ -441,12 +634,12 @@ class MyApp:
 
 ---
 
-## 5. Build Cache
+## 6. Build Cache
 
 The build cache ensures that the same build specification never executes
 twice — within one image or across images.
 
-### 5.1 Within one image — deduplication
+### 6.1 Within one image — deduplication
 
 When `image.build(spec)` is called, the Image computes a cache key from
 the build specification. If the same key has already been registered, the
@@ -468,7 +661,7 @@ The cache key is a hash of:
 - Build flags, dependencies, environment variables
 - Compiler specification (if custom)
 
-### 5.2 Across images — artifact cache
+### 6.2 Across images — artifact cache
 
 Built artifacts are cached in `~/.cache/tdx/builds/` keyed by content
 hash. If a previous image build already produced the same artifact (same
@@ -496,7 +689,7 @@ output. This means:
   fresh build.
 - `tdx cache clean --builds` clears build artifacts.
 
-### 5.3 Cache invalidation
+### 6.3 Cache invalidation
 
 The cache is conservative — when in doubt, it rebuilds:
 
@@ -506,7 +699,7 @@ The cache is conservative — when in doubt, it rebuilds:
 - **Build deps changed**: Different `build_deps` list → new key.
 - **`--no-cache`**: Force rebuild, ignore cache entirely.
 
-### 5.4 How `image.install()` deduplicates
+### 6.4 How `image.install()` deduplicates
 
 Package installations are collected and deduplicated:
 
@@ -521,7 +714,7 @@ sorted union of all requests.
 
 ---
 
-## 6. Standard Builder Modules
+## 7. Standard Builder Modules
 
 The SDK ships standard builder modules for common languages. These handle
 compiler sourcing, reproducibility flags, and artifact installation.
@@ -531,7 +724,7 @@ Each builder supports at least:
 2. Use a specific tarball provided via `fetch()` (airgapped/audited)
 3. Build the compiler from source (maximum auditability)
 
-### 6.1 Go — `tdx.builders.go`
+### 7.1 Go — `tdx.builders.go`
 
 ```python
 from tdx.builders.go import GoBuild, GoFromSource
@@ -559,7 +752,7 @@ image.build(GoBuild(
 ))
 ```
 
-### 6.2 Rust — `tdx.builders.rust`
+### 7.2 Rust — `tdx.builders.rust`
 
 ```python
 from tdx.builders.rust import RustBuild
@@ -573,7 +766,7 @@ image.build(RustBuild(
 ))
 ```
 
-### 6.3 .NET — `tdx.builders.dotnet`
+### 7.3 .NET — `tdx.builders.dotnet`
 
 ```python
 from tdx.builders.dotnet import DotnetBuild
@@ -587,7 +780,7 @@ image.build(DotnetBuild(
 ))
 ```
 
-### 6.4 C/C++ — `tdx.builders.c`
+### 7.4 C/C++ — `tdx.builders.c`
 
 ```python
 from tdx.builders.c import CBuild
@@ -600,7 +793,7 @@ image.build(CBuild(
 ))
 ```
 
-### 6.5 Custom — `Build.script()`
+### 7.5 Custom — `Build.script()`
 
 Universal fallback:
 
@@ -616,7 +809,7 @@ image.build(Build.script(
 ))
 ```
 
-### 6.6 Reproducibility flags
+### 7.6 Reproducibility flags
 
 All standard builders set these by default:
 
@@ -629,11 +822,11 @@ Disable per-build with `reproducible=False`.
 
 ---
 
-## 7. Fetch Utility
+## 8. Fetch Utility
 
 `fetch()` downloads a resource and verifies it against a known hash.
 
-### 7.1 Usage
+### 8.1 Usage
 
 ```python
 from tdx import fetch
@@ -645,14 +838,14 @@ tarball = fetch(
 # Returns Path to cached, verified file
 ```
 
-### 7.2 Semantics
+### 8.2 Semantics
 
 - **Content-addressed caching.** Cached in `~/.cache/tdx/fetch/<sha256>`.
 - **Hash is mandatory.** `fetch()` without a hash is an error.
 - **Lockfile recording.** Every `fetch()` is recorded in `tdx.lock`.
 - **Hash mismatch is fatal.** Clear error with expected vs. actual.
 
-### 7.3 Git source fetching
+### 8.3 Git source fetching
 
 ```python
 from tdx import fetch_git
@@ -664,7 +857,7 @@ src = fetch_git(
 )
 ```
 
-### 7.4 Hash helper
+### 8.4 Hash helper
 
 ```bash
 tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
@@ -673,9 +866,9 @@ tdx fetch --hash https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
 
 ---
 
-## 8. Users & Secrets
+## 9. Users & Secrets
 
-### 8.1 System users
+### 9.1 System users
 
 ```python
 image.user(
@@ -691,7 +884,7 @@ image.user(
 Generates `useradd` commands in postinst. Duplicate user names are
 detected and reported as errors.
 
-### 8.2 Secrets — post-measurement injection
+### 9.2 Secrets — post-measurement injection
 
 Secrets are declared at build time but injected after the VM boots and
 has been measured. This keeps the measurement stable and the image
@@ -702,7 +895,7 @@ image.secret("JWT_SECRET", dest="/etc/nethermind/jwt.hex", owner="nethermind")
 image.secret("TLS_CERT", dest="/etc/ssl/certs/app.pem")
 ```
 
-### 8.3 Secret delivery
+### 9.3 Secret delivery
 
 ```python
 image.secret_delivery("ssh")     # Push via SSH after boot
@@ -721,7 +914,7 @@ image.service(
 )
 ```
 
-### 8.4 Why post-measurement?
+### 9.4 Why post-measurement?
 
 - Measurement doesn't change when secrets rotate
 - Secrets aren't extractable from the image file
@@ -730,7 +923,7 @@ image.service(
 
 ---
 
-## 9. Module Distribution
+## 10. Module Distribution
 
 Modules are standard Python packages:
 
@@ -757,12 +950,12 @@ my-image/
 
 ---
 
-## 10. Lockfile
+## 11. Lockfile
 
 The lockfile (`tdx.lock`) pins every module and fetched resource to a
 content hash.
 
-### 10.1 Format
+### 11.1 Format
 
 ```toml
 # Auto-generated by tdx lock. Do not edit.
@@ -788,12 +981,12 @@ url = "https://go.dev/dl/go1.22.5.linux-amd64.tar.gz"
 integrity = "sha256:904b924d435eaea086515c6fc840b4ab..."
 ```
 
-### 10.2 Integrity
+### 11.2 Integrity
 
 Module hashes use dirhash (like Go's approach — hash over sorted file
 contents). Fetch hashes are `sha256(file_contents)`.
 
-### 10.3 Commands
+### 11.3 Commands
 
 | Command | What happens |
 |---------|-------------|
@@ -804,7 +997,7 @@ contents). Fetch hashes are `sha256(file_contents)`.
 
 ---
 
-## 11. CLI Commands
+## 12. CLI Commands
 
 ```bash
 # Build
@@ -837,9 +1030,9 @@ tdx module validate ./path/        # Check module structure
 
 ---
 
-## 12. Worked Examples
+## 13. Worked Examples
 
-### 12.1 Dual Nethermind instances
+### 13.1 Dual Nethermind instances
 
 Running two Nethermind clients on different networks in one image:
 
@@ -885,7 +1078,7 @@ nm.install(image,
 #   Services: nm-mainnet.service, nm-holesky.service
 ```
 
-### 12.2 Execution + consensus client pair
+### 13.2 Execution + consensus client pair
 
 ```python
 from tdx import Image
@@ -910,7 +1103,7 @@ image.run("usermod -aG ethereum lighthouse")
 image.secret_delivery("vsock")
 ```
 
-### 12.3 Custom compiler from source
+### 13.3 Custom compiler from source
 
 ```python
 from tdx import Image, fetch_git
@@ -936,7 +1129,7 @@ image.build(GoBuild(
 ))
 ```
 
-### 12.4 Module depending on another module
+### 13.4 Module depending on another module
 
 ```python
 # tdx_monitoring/__init__.py
@@ -960,7 +1153,7 @@ class Monitoring:
         self.install(image, **kwargs)
 ```
 
-### 12.5 Config-only module (no build)
+### 13.5 Config-only module (no build)
 
 ```python
 # tdx_hardening/__init__.py
@@ -980,7 +1173,7 @@ No `setup()`/`install()` split — hardening is one-shot, not multi-instance.
 
 ---
 
-## 13. Design Decisions & Rationale
+## 14. Design Decisions & Rationale
 
 ### Why separate build from install?
 
